@@ -197,7 +197,7 @@ class RemoteVersionCatalogRepository(
 
     companion object {
         const val DEFAULT_MANIFEST_URL =
-            "https://raw.githubusercontent.com/hesta-lang/Dash-Launcher-/main/catalog/manifest.json"
+            "https://hesta-lang.github.io/Dash-Launcher-Storage/launcher-catalog/manifest.json"
         private val CHANNELS = setOf("stable", "beta", "archived")
         private const val CONNECT_TIMEOUT_MS = 12_000
         private const val READ_TIMEOUT_MS = 20_000
