@@ -1,35 +1,44 @@
 name: Android CI
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-      - name: Prepare persistent debug signing key
+
+      - name: Prepare persistent signing key
         run: |
           mkdir -p .ci
           base64 --decode .ci/dash-launcher-debug.keystore.b64 > .ci/dash-launcher-debug.keystore
-      - name: Build debug APK
-        run: gradle :app:assembleDebug
-      - name: Upload debug APK
+
+      - name: Build optimized release APK
+        run: gradle :app:assembleRelease
+
+      - name: Upload optimized release APK
         uses: actions/upload-artifact@v4
         with:
           name: dash-launcher-${{ github.run_number }}
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
