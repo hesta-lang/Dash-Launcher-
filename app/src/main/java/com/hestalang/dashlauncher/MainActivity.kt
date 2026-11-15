@@ -17,9 +17,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -45,7 +47,14 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hestalang.dashlauncher.data.VersionEntry
+import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
+import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
+import com.hestalang.dashlauncher.download.DownloadResolution
+import com.hestalang.dashlauncher.download.DownloadStatus
+import com.hestalang.dashlauncher.download.DownloadVerification
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
@@ -85,16 +94,25 @@ private enum class CatalogChannel(val title: String) {
 }
 
 private data class VersionPreview(
+    val id: String,
+    val displayName: String,
     val version: String,
     val description: String,
-    val channel: String
+    val channel: String,
+    val minAndroidApi: Int = 23,
+    val supportedAbis: List<String> = listOf("arm64-v8a", "armeabi-v7a"),
+    val downloadUrl: String? = null,
+    val sizeBytes: Long? = null,
+    val sha256: String? = null
 )
 
 private val catalogChannels = CatalogChannel.entries
 private val sampleVersion = VersionPreview(
-    "Geometry Dash",
-    "Las versiones disponibles aparecerán aquí cuando el catálogo esté conectado.",
-    "Stable"
+    id = "geometry-dash-preview",
+    displayName = "Geometry Dash",
+    version = "Versión pendiente de catálogo",
+    description = "La fuente de descarga aún no está configurada. No se habilitará la descarga hasta verificar el archivo y su procedencia.",
+    channel = "Stable"
 )
 
 @Composable
@@ -262,7 +280,10 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
     var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
     var searchText by rememberSaveable { mutableStateOf("") }
     val showSample = remember(searchText, selectedChannel) {
-        selectedChannel == 0 && sampleVersion.version.contains(searchText, ignoreCase = true)
+        selectedChannel == 0 && (
+            sampleVersion.displayName.contains(searchText, ignoreCase = true) ||
+                sampleVersion.version.contains(searchText, ignoreCase = true)
+            )
     }
 
     Column(
@@ -443,6 +464,24 @@ private fun SettingsScreen(
 
 @Composable
 private fun VersionCard(version: VersionPreview) {
+    val entry = remember(version) {
+        VersionEntry(
+            id = version.id,
+            displayName = version.displayName,
+            version = version.version,
+            channel = version.channel.lowercase(),
+            description = version.description,
+            minAndroidApi = version.minAndroidApi,
+            supportedAbis = version.supportedAbis,
+            downloadUrl = version.downloadUrl,
+            sizeBytes = version.sizeBytes,
+            sha256 = version.sha256
+        )
+    }
+    val resolution = remember(entry) {
+        CatalogDirectDownloadProvider().resolve(entry)
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -450,29 +489,157 @@ private fun VersionCard(version: VersionPreview) {
             containerColor = MaterialTheme.colorScheme.surfaceContainer
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(version.version, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    version.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(version.displayName, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        version.version,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        version.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        version.channel,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.secondaryContainer
-            ) {
-                Text(
-                    version.channel,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    style = MaterialTheme.typography.labelSmall
-                )
+            VersionDownloadAction(resolution)
+        }
+    }
+}
+
+@Composable
+private fun VersionDownloadAction(resolution: DownloadResolution) {
+    val context = LocalContext.current
+    val coordinator = remember(context) { ApkDownloadCoordinator(context) }
+    val artifact = (resolution as? DownloadResolution.Available)?.artifact
+
+    var downloadId by rememberSaveable(artifact?.fileName) { mutableStateOf<Long?>(null) }
+    var progressPercent by remember(artifact?.fileName) { mutableIntStateOf(0) }
+    var statusMessage by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
+    var isVerified by rememberSaveable(artifact?.fileName) { mutableStateOf(false) }
+
+    LaunchedEffect(downloadId, artifact) {
+        val id = downloadId ?: return@LaunchedEffect
+        val item = artifact ?: return@LaunchedEffect
+
+        while (true) {
+            val snapshot = withContext(Dispatchers.IO) {
+                coordinator.query(id)
             }
+
+            if (snapshot == null) {
+                statusMessage = "No se pudo consultar el estado de la descarga."
+                downloadId = null
+                break
+            }
+
+            if (snapshot.totalBytes > 0L) {
+                progressPercent = ((snapshot.downloadedBytes * 100L) / snapshot.totalBytes)
+                    .toInt()
+                    .coerceIn(0, 100)
+            }
+
+            when (snapshot.status) {
+                DownloadStatus.COMPLETED -> {
+                    statusMessage = "Verificando tamaño y SHA-256…"
+                    val verification = withContext(Dispatchers.IO) {
+                        coordinator.verifyCompletedDownload(id, item)
+                    }
+                    when (verification) {
+                        is DownloadVerification.Verified -> {
+                            isVerified = true
+                            statusMessage = "APK descargado y verificado. Está guardado en el almacenamiento privado de Dash Launcher."
+                        }
+                        is DownloadVerification.Rejected -> {
+                            statusMessage = verification.reason
+                        }
+                    }
+                    downloadId = null
+                    break
+                }
+                DownloadStatus.FAILED -> {
+                    statusMessage = "Android no pudo completar la descarga (código ${snapshot.reasonCode ?: 0})."
+                    downloadId = null
+                    break
+                }
+                else -> {
+                    delay(500)
+                }
+            }
+        }
+    }
+
+    if (artifact == null) {
+        Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+            Text("Descarga no disponible")
+        }
+        val reason = (resolution as? DownloadResolution.Unavailable)?.reason
+            ?: "No hay un artefacto descargable configurado."
+        Text(
+            reason,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    } else {
+        Button(
+            onClick = {
+                runCatching { coordinator.enqueue(artifact) }
+                    .onSuccess { id ->
+                        progressPercent = 0
+                        statusMessage = "Descarga iniciada por el gestor de Android."
+                        downloadId = id
+                    }
+                    .onFailure { error ->
+                        statusMessage = error.message ?: "No se pudo iniciar la descarga."
+                    }
+            },
+            enabled = downloadId == null && !isVerified,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                when {
+                    isVerified -> "Descarga verificada"
+                    downloadId != null -> "Descargando…"
+                    else -> "Descargar"
+                }
+            )
+        }
+
+        if (downloadId != null) {
+            LinearProgressIndicator(
+                progress = progressPercent / 100f,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Progreso: $progressPercent%",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        statusMessage?.let { message ->
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
