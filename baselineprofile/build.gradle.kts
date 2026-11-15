@@ -1,0 +1,42 @@
+plugins {
+    id("com.android.test")
+    id("org.jetbrains.kotlin.android")
+    id("androidx.baselineprofile")
+}
+
+android {
+    namespace = "com.hestalang.dashlauncher.baselineprofile"
+    compileSdk = 35
+
+    defaultConfig {
+        minSdk = 29
+        targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    targetProjectPath = ":app"
+
+    testOptions {
+        managedDevices {
+            devices {
+                create<com.android.build.api.dsl.ManagedVirtualDevice>("pixel2Api29") {
+                    device = "Pixel 2"
+                    apiLevel = 29
+                    systemImageSource = "aosp"
+                }
+            }
+        }
+    }
+}
+
+baselineProfile {
+    managedDevices += "pixel2Api29"
+    useConnectedDevices = false
+}
+
+dependencies {
+    implementation("androidx.benchmark:benchmark-macro-junit4:1.5.0")
+    implementation("androidx.test:runner:1.6.2")
+    implementation("androidx.test.ext:junit:1.2.1")
+    implementation("androidx.test.uiautomator:uiautomator:2.3.0")
+}
