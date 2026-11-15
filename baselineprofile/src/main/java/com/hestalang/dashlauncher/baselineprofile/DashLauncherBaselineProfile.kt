@@ -25,9 +25,6 @@ class DashLauncherBaselineProfile {
         device.findObject(By.text("Configuración")).click()
         device.wait(Until.hasObject(By.text("Tema de la aplicación")), 5_000)
 
-        device.findObject(By.text("Claro")).click()
-        device.findObject(By.text("Sistema")).click()
-
         device.findObject(By.text("Versiones")).click()
         device.wait(Until.hasObject(By.text("Catálogo de versiones")), 5_000)
 
