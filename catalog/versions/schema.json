@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dash Launcher version index",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "version",
+      "channel",
+      "platform",
+      "abi",
+      "minAndroidApi",
+      "releasedAt",
+      "changelog",
+      "artifact"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9._-]+$"
+      },
+      "version": {
+        "type": "string"
+      },
+      "channel": {
+        "enum": [
+          "stable",
+          "beta",
+          "archived"
+        ]
+      },
+      "platform": {
+        "const": "android"
+      },
+      "abi": {
+        "enum": [
+          "arm64-v8a",
+          "armeabi-v7a",
+          "x86",
+          "x86_64"
+        ]
+      },
+      "minAndroidApi": {
+        "type": "integer",
+        "minimum": 23
+      },
+      "releasedAt": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "changelog": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "artifact": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "object",
+            "required": [
+              "url",
+              "sizeBytes",
+              "sha256"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https://"
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-fA-F0-9]{64}$"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "additionalProperties": false
+  }
+}
