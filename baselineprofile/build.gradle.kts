@@ -24,23 +24,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    testOptions {
-        managedDevices {
-            devices {
-                create<com.android.build.api.dsl.ManagedVirtualDevice>("pixel2Api29") {
-                    device = "Pixel 2"
-                    apiLevel = 29
-                    systemImageSource = "aosp"
-                }
-            }
-        }
-    }
 }
 
 baselineProfile {
-    managedDevices += "pixel2Api29"
-    useConnectedDevices = false
+    useConnectedDevices = true
 }
 
 dependencies {

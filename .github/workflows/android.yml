@@ -17,6 +17,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -33,8 +39,17 @@ jobs:
           mkdir -p .ci
           base64 --decode .ci/dash-launcher-debug.keystore.b64 > .ci/dash-launcher-debug.keystore
 
-      - name: Build optimized release APK
-        run: gradle :app:assembleRelease
+      - name: Build optimized release and generate Baseline Profile
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: default
+          arch: x86
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: gradle :app:assembleRelease
 
       - name: Upload optimized release APK
         uses: actions/upload-artifact@v4
