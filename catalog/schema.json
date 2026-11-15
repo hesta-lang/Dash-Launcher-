@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dash Launcher catalog manifest",
+  "type": "object",
+  "required": [
+    "catalogVersion",
+    "catalogId",
+    "minLauncherVersion",
+    "channels",
+    "versionFiles"
+  ],
+  "properties": {
+    "catalogVersion": {
+      "const": 1
+    },
+    "catalogId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "minLauncherVersion": {
+      "type": "string"
+    },
+    "channels": {
+      "type": "object",
+      "required": [
+        "stable",
+        "beta",
+        "archived"
+      ],
+      "properties": {
+        "stable": {
+          "const": "stable"
+        },
+        "beta": {
+          "const": "beta"
+        },
+        "archived": {
+          "const": "archived"
+        }
+      },
+      "additionalProperties": false
+    },
+    "versionFiles": {
+      "type": "object",
+      "required": [
+        "stable",
+        "beta",
+        "archived"
+      ],
+      "properties": {
+        "stable": {
+          "type": "string"
+        },
+        "beta": {
+          "type": "string"
+        },
+        "archived": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
