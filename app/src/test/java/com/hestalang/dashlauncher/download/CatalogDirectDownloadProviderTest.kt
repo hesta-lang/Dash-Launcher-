@@ -13,7 +13,8 @@ class CatalogDirectDownloadProviderTest {
         url: String? = "https://downloads.example.test/geometry-dash.apk",
         size: Long? = 1024L,
         hash: String? = validHash,
-        id: String = "2.2081"
+        id: String = "2.2081",
+        providerId: String = "direct"
     ) = VersionEntry(
         id = id,
         displayName = "Geometry Dash",
@@ -24,7 +25,8 @@ class CatalogDirectDownloadProviderTest {
         supportedAbis = listOf("arm64-v8a", "armeabi-v7a"),
         downloadUrl = url,
         sizeBytes = size,
-        sha256 = hash
+        sha256 = hash,
+        providerId = providerId
     )
 
     @Test
@@ -75,5 +77,13 @@ class CatalogDirectDownloadProviderTest {
         val filename = (result as DownloadResolution.Available).artifact.fileName
         assertTrue(filename.matches(Regex("^geometry-dash-[a-z0-9_-]+\\.apk$")))
         assertTrue(!filename.contains('/'))
+    }
+
+    @Test
+    fun rejectsUnknownProviderUntilItsAdapterExists() {
+        val result = DownloadProviderRegistry(listOf(provider))
+            .resolve(entry(providerId = "uptodown"))
+        assertTrue(result is DownloadResolution.Unavailable)
+        assertTrue((result as DownloadResolution.Unavailable).reason.contains("uptodown"))
     }
 }

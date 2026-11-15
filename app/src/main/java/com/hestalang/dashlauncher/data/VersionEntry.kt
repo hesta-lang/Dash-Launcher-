@@ -10,5 +10,6 @@ data class VersionEntry(
     val supportedAbis: List<String>,
     val downloadUrl: String?,
     val sizeBytes: Long?,
-    val sha256: String?
+    val sha256: String?,
+    val providerId: String = "direct"
 )

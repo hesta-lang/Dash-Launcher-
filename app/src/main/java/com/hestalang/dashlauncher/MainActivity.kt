@@ -1,6 +1,7 @@
 package com.hestalang.dashlauncher
 
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -47,9 +50,13 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hestalang.dashlauncher.data.CatalogVersionMetadata
+import com.hestalang.dashlauncher.data.CatalogVersionRecord
+import com.hestalang.dashlauncher.data.RemoteVersionCatalogRepository
 import com.hestalang.dashlauncher.data.VersionEntry
 import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
 import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
+import com.hestalang.dashlauncher.download.DownloadProviderRegistry
 import com.hestalang.dashlauncher.download.DownloadResolution
 import com.hestalang.dashlauncher.download.DownloadStatus
 import com.hestalang.dashlauncher.download.DownloadVerification
@@ -87,33 +94,13 @@ private enum class AppThemeOption(
     }
 }
 
-private enum class CatalogChannel(val title: String) {
-    Stable("Stable"),
-    Beta("Beta"),
-    Archived("Archived")
+private enum class CatalogChannel(val key: String, val title: String) {
+    Stable("stable", "Stable"),
+    Beta("beta", "Beta"),
+    Archived("archived", "Archived")
 }
 
-private data class VersionPreview(
-    val id: String,
-    val displayName: String,
-    val version: String,
-    val description: String,
-    val channel: String,
-    val minAndroidApi: Int = 23,
-    val supportedAbis: List<String> = listOf("arm64-v8a", "armeabi-v7a"),
-    val downloadUrl: String? = null,
-    val sizeBytes: Long? = null,
-    val sha256: String? = null
-)
-
 private val catalogChannels = CatalogChannel.entries
-private val sampleVersion = VersionPreview(
-    id = "geometry-dash-preview",
-    displayName = "Geometry Dash",
-    version = "Versión pendiente de catálogo",
-    description = "La fuente de descarga aún no está configurada. No se habilitará la descarga hasta verificar el archivo y su procedencia.",
-    channel = "Stable"
-)
 
 @Composable
 private fun DashLauncherRoot() {
@@ -277,20 +264,53 @@ private fun BottomBarItem(
 
 @Composable
 private fun VersionsScreen(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val repository = remember(context) { RemoteVersionCatalogRepository(context) }
+
     var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
     var searchText by rememberSaveable { mutableStateOf("") }
-    val showSample = remember(searchText, selectedChannel) {
-        selectedChannel == 0 && (
-            sampleVersion.displayName.contains(searchText, ignoreCase = true) ||
-                sampleVersion.version.contains(searchText, ignoreCase = true)
-            )
+    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
+    var forceNextRefresh by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var cacheWarning by remember { mutableStateOf<String?>(null) }
+    var versions by remember { mutableStateOf<List<CatalogVersionRecord>>(emptyList()) }
+
+    LaunchedEffect(selectedChannel, refreshCounter) {
+        isLoading = true
+        loadError = null
+        cacheWarning = null
+        val forceRefresh = forceNextRefresh
+        forceNextRefresh = false
+
+        runCatching {
+            withContext(Dispatchers.IO) {
+                repository.loadChannel(catalogChannels[selectedChannel].key, forceRefresh)
+            }
+        }.onSuccess { snapshot ->
+            versions = snapshot.versions
+            cacheWarning = snapshot.warning
+        }.onFailure { error ->
+            versions = emptyList()
+            loadError = error.message ?: "No se pudo cargar el catálogo."
+        }
+        isLoading = false
+    }
+
+    val filteredVersions = remember(versions, searchText) {
+        versions.filter { version ->
+            version.displayName.contains(searchText, ignoreCase = true) ||
+                version.version.contains(searchText, ignoreCase = true) ||
+                version.changelog.orEmpty().contains(searchText, ignoreCase = true)
+        }
     }
 
     Column(
-        modifier = modifier.padding(horizontal = 16.dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Spacer(Modifier.height(2.dp))
         OutlinedTextField(
             value = searchText,
             onValueChange = { searchText = it },
@@ -311,22 +331,80 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             onChannelSelected = { selectedChannel = it }
         )
 
-        Text(
-            "Catálogo de versiones",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Catálogo de versiones",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    catalogChannels[selectedChannel].title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Button(
+                onClick = {
+                    forceNextRefresh = true
+                    refreshCounter++
+                },
+                enabled = !isLoading
+            ) {
+                Text("Actualizar")
+            }
+        }
 
-        if (showSample) {
-            VersionCard(sampleVersion)
-        } else {
+        if (isLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             Text(
-                "No hay versiones en este canal todavía.",
-                modifier = Modifier.padding(vertical = 12.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium
+                "Consultando el catálogo…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+
+        cacheWarning?.let { warning ->
+            Text(
+                warning,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        loadError?.let { error ->
+            Text(
+                error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+
+        when {
+            isLoading -> Unit
+            loadError != null -> Unit
+            filteredVersions.isEmpty() -> {
+                Text(
+                    if (versions.isEmpty()) {
+                        "Este canal todavía no tiene versiones publicadas en el catálogo."
+                    } else {
+                        "No hay versiones que coincidan con la búsqueda."
+                    },
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            else -> filteredVersions.forEach { version ->
+                CatalogVersionCard(
+                    record = version,
+                    repository = repository
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }
 
@@ -372,6 +450,172 @@ private fun ChannelSelector(
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogVersionCard(
+    record: CatalogVersionRecord,
+    repository: RemoteVersionCatalogRepository
+) {
+    var expanded by rememberSaveable(record.id) { mutableStateOf(false) }
+    var metadata by remember(record.id) { mutableStateOf<CatalogVersionMetadata?>(null) }
+    var isLoadingMetadata by remember(record.id) { mutableStateOf(false) }
+    var metadataError by remember(record.id) { mutableStateOf<String?>(null) }
+    var metadataWarning by remember(record.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(expanded, record.metadataUrl) {
+        if (expanded && metadata == null && !isLoadingMetadata) {
+            isLoadingMetadata = true
+            metadataError = null
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repository.loadMetadata(record)
+                }
+            }.onSuccess { result ->
+                metadata = result.metadata
+                metadataWarning = result.warning
+            }.onFailure { error ->
+                metadataError = error.message ?: "No se pudieron cargar los metadatos."
+            }
+            isLoadingMetadata = false
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(record.displayName, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        record.version,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Android API " + record.minAndroidApi + " o superior",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    record.changelog?.takeIf { it.isNotBlank() }?.let {
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        record.channel,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+
+            Button(
+                onClick = { expanded = !expanded },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (expanded) "Ocultar detalles" else "Detalles y descarga")
+            }
+
+            if (expanded) {
+                when {
+                    isLoadingMetadata -> {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            "Cargando metadatos de esta versión…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    metadataError != null -> {
+                        Text(
+                            metadataError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(
+                            onClick = {
+                                metadata = null
+                                metadataError = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                    metadata != null -> {
+                        val details = metadata!!
+                        metadataWarning?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        if (details.description.isNotBlank()) {
+                            Text(
+                                details.description,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Text(
+                            "ABI: " + details.supportedAbis.joinToString(", "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        val apiCompatible = Build.VERSION.SDK_INT >= details.minAndroidApi
+                        val abiCompatible = details.supportedAbis.any { supported ->
+                            Build.SUPPORTED_ABIS.contains(supported)
+                        }
+                        val entry = VersionEntry(
+                            id = record.id,
+                            displayName = record.displayName,
+                            version = record.version,
+                            channel = record.channel,
+                            description = details.description,
+                            minAndroidApi = details.minAndroidApi,
+                            supportedAbis = details.supportedAbis,
+                            downloadUrl = details.artifact?.url,
+                            sizeBytes = details.artifact?.sizeBytes,
+                            sha256 = details.artifact?.sha256,
+                            providerId = details.artifact?.providerId ?: "direct"
+                        )
+                        val resolution = when {
+                            !apiCompatible -> DownloadResolution.Unavailable(
+                                "Esta versión requiere Android API " + details.minAndroidApi + " o superior."
+                            )
+                            !abiCompatible -> DownloadResolution.Unavailable(
+                                "Este APK no tiene una arquitectura compatible con este dispositivo."
+                            )
+                            else -> remember(entry) {
+                                DownloadProviderRegistry(
+                                    listOf(CatalogDirectDownloadProvider())
+                                ).resolve(entry)
+                            }
+                        }
+                        VersionDownloadAction(resolution)
+                    }
                 }
             }
         }
@@ -463,68 +707,6 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun VersionCard(version: VersionPreview) {
-    val entry = remember(version) {
-        VersionEntry(
-            id = version.id,
-            displayName = version.displayName,
-            version = version.version,
-            channel = version.channel.lowercase(),
-            description = version.description,
-            minAndroidApi = version.minAndroidApi,
-            supportedAbis = version.supportedAbis,
-            downloadUrl = version.downloadUrl,
-            sizeBytes = version.sizeBytes,
-            sha256 = version.sha256
-        )
-    }
-    val resolution = remember(entry) {
-        CatalogDirectDownloadProvider().resolve(entry)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(version.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        version.version,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        version.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.secondaryContainer
-                ) {
-                    Text(
-                        version.channel,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            }
-            VersionDownloadAction(resolution)
-        }
-    }
-}
-
-@Composable
 private fun VersionDownloadAction(resolution: DownloadResolution) {
     val context = LocalContext.current
     val coordinator = remember(context) { ApkDownloadCoordinator(context) }
@@ -575,13 +757,12 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
                     break
                 }
                 DownloadStatus.FAILED -> {
-                    statusMessage = "Android no pudo completar la descarga (código ${snapshot.reasonCode ?: 0})."
+                    statusMessage = "Android no pudo completar la descarga (código " +
+                        (snapshot.reasonCode ?: 0) + ")."
                     downloadId = null
                     break
                 }
-                else -> {
-                    delay(500)
-                }
+                else -> delay(500)
             }
         }
     }

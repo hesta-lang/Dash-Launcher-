@@ -1,27 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Dash Launcher version index",
+  "title": "Dash Launcher channel version index",
+  "description": "Small channel index. Full platform and artifact details live in a separate metadata JSON document.",
   "type": "array",
   "items": {
     "type": "object",
     "required": [
       "id",
+      "displayName",
       "version",
       "channel",
       "platform",
-      "abi",
       "minAndroidApi",
-      "releasedAt",
-      "changelog",
-      "artifact"
+      "metadata"
     ],
     "properties": {
       "id": {
         "type": "string",
-        "pattern": "^[a-zA-Z0-9._-]+$"
+        "pattern": "^[a-zA-Z0-9._-]{1,96}$"
+      },
+      "displayName": {
+        "type": "string",
+        "minLength": 1
       },
       "version": {
-        "type": "string"
+        "type": "string",
+        "minLength": 1
       },
       "channel": {
         "enum": [
@@ -32,14 +36,6 @@
       },
       "platform": {
         "const": "android"
-      },
-      "abi": {
-        "enum": [
-          "arm64-v8a",
-          "armeabi-v7a",
-          "x86",
-          "x86_64"
-        ]
       },
       "minAndroidApi": {
         "type": "integer",
@@ -58,36 +54,10 @@
           "null"
         ]
       },
-      "artifact": {
-        "oneOf": [
-          {
-            "type": "null"
-          },
-          {
-            "type": "object",
-            "required": [
-              "url",
-              "sizeBytes",
-              "sha256"
-            ],
-            "properties": {
-              "url": {
-                "type": "string",
-                "format": "uri",
-                "pattern": "^https://"
-              },
-              "sizeBytes": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "sha256": {
-                "type": "string",
-                "pattern": "^[a-fA-F0-9]{64}$"
-              }
-            },
-            "additionalProperties": false
-          }
-        ]
+      "metadata": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Relative JSON path to this version's metadata, resolved from this index file."
       }
     },
     "additionalProperties": false

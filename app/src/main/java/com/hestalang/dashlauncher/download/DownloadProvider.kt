@@ -17,18 +17,27 @@ sealed interface DownloadResolution {
 }
 
 interface DownloadProvider {
+    val id: String
     fun resolve(version: VersionEntry): DownloadResolution
 }
 
 /**
- * Resolves only direct HTTPS artifacts described by the launcher's own catalog.
- * It deliberately does not scrape store pages or discover private CDN endpoints.
+ * Resolves direct APK artifacts explicitly declared by the version metadata.
+ * Provider identifiers form an extension point for future documented APIs.
  */
 class CatalogDirectDownloadProvider : DownloadProvider {
+    override val id: String = "direct"
+
     override fun resolve(version: VersionEntry): DownloadResolution {
+        if (version.providerId != id) {
+            return DownloadResolution.Unavailable(
+                "El proveedor '" + version.providerId + "' todavía no está integrado en Dash Launcher."
+            )
+        }
+
         val url = version.downloadUrl
             ?: return DownloadResolution.Unavailable(
-                "Este registro todavía no incluye una URL directa HTTPS."
+                "Esta versión todavía no tiene un enlace directo de descarga autorizado."
             )
         val size = version.sizeBytes
             ?: return DownloadResolution.Unavailable(
@@ -61,6 +70,16 @@ class CatalogDirectDownloadProvider : DownloadProvider {
             )
         )
     }
+}
+
+class DownloadProviderRegistry(providers: List<DownloadProvider>) {
+    private val providersById = providers.associateBy { it.id }
+
+    fun resolve(version: VersionEntry): DownloadResolution =
+        providersById[version.providerId]?.resolve(version)
+            ?: DownloadResolution.Unavailable(
+                "El proveedor '" + version.providerId + "' no está disponible o todavía no está autorizado."
+            )
 }
 
 object DownloadArtifactValidator {

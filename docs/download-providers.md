@@ -1,26 +1,38 @@
-# Internal download providers
+# Download providers and catalog pipeline
 
-Dash Launcher downloads only APK artifacts explicitly described by its own catalog.
+## Prism-inspired metadata flow
 
-## Current behavior
+Dash Launcher uses a two-stage catalog:
+1. \`catalog/manifest.json\` maps Stable, Beta and Archived to channel index files.
+2. The selected channel index lists version IDs and relative paths to per-version metadata documents.
+3. A version metadata document describes Android API requirements, supported ABIs and an optional artifact.
+4. A registered provider resolves the artifact. Unknown provider IDs stay disabled.
+5. Android DownloadManager performs the background APK transfer.
+6. Dash Launcher verifies the exact file size and SHA-256 before marking it verified.
 
-- The app uses Android `DownloadManager` so transfers continue outside the activity and Android displays its download notification.
-- Files are written to the app-specific external downloads directory; no broad storage permission is requested.
-- The catalog entry must contain a direct HTTPS URL, a positive verified file size, and a 64-character SHA-256.
-- After the transfer, Dash Launcher streams the file through SHA-256 and checks its size. A mismatch causes the downloaded file to be removed.
-- The current sample catalog item has no artifact metadata, so its Download button remains disabled.
+This separates catalog discovery from artifact delivery. The app fetches detailed metadata only after a version card is opened. The metadata cache stores documents in the app cache directory and revalidates them with ETag / Last-Modified headers. If the network is unavailable, a previously parsed cached document may be used with a visible warning.
 
-## Provider boundary
+See [the Prism Launcher study](prism-launcher-study.md) for the source-code analysis and the limits of adapting its instance model to Android.
 
-`DownloadProvider` separates version metadata from its delivery source. The current implementation, `CatalogDirectDownloadProvider`, accepts only direct HTTPS artifact URLs already present in a catalog entry.
+## Current direct provider
 
-An Uptodown-specific adapter is intentionally not enabled. Uptodown's public help documents downloading through its website or its official Android app, and a Media Kit link to an app page; it does not document a public API for third-party launchers to request a particular APK. Do not scrape pages, reverse-engineer private download endpoints, or automate Uptodown requests without its express authorization. An official API/partner agreement can later be implemented as another `DownloadProvider`.
+The registered provider is \`direct\`. It accepts only a complete HTTPS artifact descriptor with:
+- a direct HTTPS URL,
+- a positive exact file size,
+- a 64-character SHA-256 digest.
 
-## What this does not do yet
+Files are written to the app-specific external downloads directory. Android displays the download notification. A mismatch in size or SHA-256 causes the downloaded file to be removed.
 
-- It does not discover versions from Uptodown.
-- It does not fetch or parse Uptodown pages.
-- It does not install the APK automatically. Android's package installer and the user's confirmation/unknown-app permission are separate steps.
-- It does not enable any Geometry Dash APK until the catalog contains a verified, authorized artifact URL, exact size, and SHA-256.
+## Provider extension boundary
 
-Unit tests cover HTTPS validation, required integrity metadata, credential rejection, and safe APK filenames.
+Provider IDs are intended to support future adapters. An Uptodown-specific adapter is not enabled: the public documentation reviewed for this project does not provide a public third-party API contract for requesting arbitrary APK downloads. Do not scrape pages, reverse-engineer private CDN endpoints, or automate requests without express authorization.
+
+An adapter may be added when a provider publishes a documented API and permits this use. A provider that only returns a web page, or whose distribution rights do not cover the requested APK, is not a direct-download provider.
+
+## Current limitations
+
+- Stable, Beta and Archived are empty until authorized version metadata is published.
+- This build does not discover Geometry Dash releases from Uptodown or another APK mirror.
+- It does not automatically install an APK. Android's package installer and the user's confirmation / unknown-app permission are separate.
+- Android's package manager ordinarily keeps one installed app per package ID; multiple downloaded APKs do not create Prism-style side-by-side installations.
+- Do not publish a Geometry Dash artifact without verifying its source, signature/provenance and distribution permission.

@@ -1,16 +1,20 @@
 # Version index files
 
-Each channel file is a JSON array of version records. The array is intentionally empty until there are verified, authorized installer artifacts to publish.
+Each channel file is a small JSON array. Dash Launcher fetches the selected channel index first, then loads an individual version's metadata only when the user expands that version. This keeps the initial catalog response small and avoids requesting every artifact record at startup.
 
-A record includes:
-- `id`: unique identifier, for example `2.2081-android-arm64-v8a`.
-- `version`: game version string.
-- `channel`: stable, beta, or archived.
-- `platform`: android.
-- `abi`: Android ABI.
-- `minAndroidApi`: minimum Android API level.
-- `releasedAt`: ISO-8601 timestamp or null.
-- `changelog`: release notes or null.
-- `artifact`: null until a verified authorized download is available; otherwise HTTPS URL, byte size, and SHA-256.
+Each index record contains:
+- \`id\`: unique stable identifier, for example \`gd-2.2081-arm64\`.
+- \`displayName\`: name shown in the launcher.
+- \`version\`: Geometry Dash version label.
+- \`channel\`: \`stable\`, \`beta\`, or \`archived\`.
+- \`platform\`: \`android\`.
+- \`minAndroidApi\`: minimum Android API level.
+- \`releasedAt\`: ISO-8601 timestamp or null.
+- \`changelog\`: short release note or null.
+- \`metadata\`: relative path to the version-specific metadata JSON document.
 
-Never show an entry as installable when `artifact` is null. The launcher must verify the downloaded size and SHA-256 before exposing an install action.
+The metadata path is resolved relative to the index file and must remain inside the catalog directory on the same HTTPS host.
+
+The channel arrays are intentionally empty until there are verified, authorized installer artifacts to publish. Do not add a Geometry Dash APK merely because it can be downloaded from a public mirror. Confirm its provenance and redistribution permissions first.
+
+See [the metadata format](../metadata/README.md) and [the JSON schema](schema.json).
