@@ -5,7 +5,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,22 +15,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
@@ -46,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +50,9 @@ import kotlinx.coroutines.withContext
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
+
+private val LightColors = lightColorScheme()
+private val DarkColors = darkColorScheme()
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,12 +91,10 @@ private data class VersionPreview(
 )
 
 private val catalogChannels = CatalogChannel.entries
-private val sampleVersions = listOf(
-    VersionPreview(
-        "Geometry Dash",
-        "Las versiones disponibles aparecerán aquí cuando el catálogo esté conectado.",
-        "Stable"
-    )
+private val sampleVersion = VersionPreview(
+    "Geometry Dash",
+    "Las versiones disponibles aparecerán aquí cuando el catálogo esté conectado.",
+    "Stable"
 )
 
 @Composable
@@ -107,7 +105,6 @@ private fun DashLauncherRoot() {
     }
     var selectedTheme by rememberSaveable { mutableStateOf(AppThemeOption.SYSTEM) }
 
-    // Read the saved setting off the main thread so first composition is not delayed by disk I/O.
     LaunchedEffect(preferences) {
         val savedValue = withContext(Dispatchers.IO) {
             preferences.getString(THEME_PREFERENCE, AppThemeOption.SYSTEM.preferenceValue)
@@ -115,34 +112,21 @@ private fun DashLauncherRoot() {
         selectedTheme = AppThemeOption.fromPreference(savedValue)
     }
 
-    val useDarkTheme = when (selectedTheme) {
-        AppThemeOption.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+    val darkTheme = when (selectedTheme) {
+        AppThemeOption.SYSTEM -> isSystemInDarkTheme()
         AppThemeOption.LIGHT -> false
         AppThemeOption.DARK -> true
     }
 
-    DashLauncherTheme(darkTheme = useDarkTheme) {
+    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors) {
         DashLauncherApp(
             selectedTheme = selectedTheme,
-            onThemeSelected = { newTheme ->
-                selectedTheme = newTheme
-                preferences.edit()
-                    .putString(THEME_PREFERENCE, newTheme.preferenceValue)
-                    .apply()
+            onThemeSelected = { theme ->
+                selectedTheme = theme
+                preferences.edit().putString(THEME_PREFERENCE, theme.preferenceValue).apply()
             }
         )
     }
-}
-
-@Composable
-private fun DashLauncherTheme(
-    darkTheme: Boolean,
-    content: @Composable () -> Unit
-) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme(),
-        content = content
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,42 +158,16 @@ private fun DashLauncherApp(
             )
         },
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedDestination == 0,
-                    onClick = { selectedDestination = 0 },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_versions),
-                            contentDescription = null
-                        )
-                    },
-                    label = { Text("Versiones") }
-                )
-                NavigationBarItem(
-                    selected = selectedDestination == 1,
-                    onClick = { selectedDestination = 1 },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_settings),
-                            contentDescription = null
-                        )
-                    },
-                    label = { Text("Configuración") }
-                )
-            }
-        }
-    ) { innerPadding ->
-        when (selectedDestination) {
-            0 -> VersionsScreen(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
+            SimpleBottomBar(
+                selectedDestination = selectedDestination,
+                onDestinationSelected = { selectedDestination = it }
             )
+        }
+    ) { insets ->
+        when (selectedDestination) {
+            0 -> VersionsScreen(Modifier.fillMaxSize().padding(insets))
             else -> SettingsScreen(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
+                modifier = Modifier.fillMaxSize().padding(insets),
                 selectedTheme = selectedTheme,
                 onThemeSelected = onThemeSelected
             )
@@ -218,20 +176,98 @@ private fun DashLauncherApp(
 }
 
 @Composable
-private fun VersionsScreen(modifier: Modifier = Modifier) {
-    var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
-    var searchText by rememberSaveable { mutableStateOf("") }
-    val filteredVersions = remember(searchText, selectedChannel) {
-        sampleVersions.filter {
-            it.version.contains(searchText, ignoreCase = true) &&
-                it.channel == catalogChannels[selectedChannel].title
+private fun SimpleBottomBar(
+    selectedDestination: Int,
+    onDestinationSelected: (Int) -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BottomBarItem(
+                modifier = Modifier.weight(1f),
+                title = "Versiones",
+                iconId = R.drawable.ic_versions,
+                selected = selectedDestination == 0,
+                onClick = { onDestinationSelected(0) }
+            )
+            BottomBarItem(
+                modifier = Modifier.weight(1f),
+                title = "Configuración",
+                iconId = R.drawable.ic_settings,
+                selected = selectedDestination == 1,
+                onClick = { onDestinationSelected(1) }
+            )
         }
+    }
+}
+
+@Composable
+private fun BottomBarItem(
+    modifier: Modifier,
+    title: String,
+    iconId: Int,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val container = if (selected) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Column(
         modifier = modifier
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(role = Role.Tab, onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            color = container,
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(
+                painter = painterResource(iconId),
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+            )
+        }
+        Text(
+            title,
+            color = content,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun VersionsScreen(modifier: Modifier = Modifier) {
+    var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
+    var searchText by rememberSaveable { mutableStateOf("") }
+    val showSample = remember(searchText, selectedChannel) {
+        selectedChannel == 0 && sampleVersion.version.contains(searchText, ignoreCase = true)
+    }
+
+    Column(
+        modifier = modifier.padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Spacer(Modifier.height(2.dp))
         OutlinedTextField(
@@ -249,15 +285,10 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             shape = RoundedCornerShape(14.dp)
         )
 
-        TabRow(selectedTabIndex = selectedChannel) {
-            catalogChannels.forEachIndexed { index, channel ->
-                Tab(
-                    selected = selectedChannel == index,
-                    onClick = { selectedChannel = index },
-                    text = { Text(channel.title) }
-                )
-            }
-        }
+        ChannelSelector(
+            selectedChannel = selectedChannel,
+            onChannelSelected = { selectedChannel = it }
+        )
 
         Text(
             "Catálogo de versiones",
@@ -265,24 +296,61 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             fontWeight = FontWeight.SemiBold
         )
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            if (filteredVersions.isEmpty()) {
-                item {
-                    Text(
-                        "No hay versiones en este canal todavía.",
-                        modifier = Modifier.padding(vertical = 12.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
+        if (showSample) {
+            VersionCard(sampleVersion)
+        } else {
+            Text(
+                "No hay versiones en este canal todavía.",
+                modifier = Modifier.padding(vertical = 12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChannelSelector(
+    selectedChannel: Int,
+    onChannelSelected: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        catalogChannels.forEachIndexed { index, channel ->
+            val selected = selectedChannel == index
+            val background = if (selected) {
+                MaterialTheme.colorScheme.secondaryContainer
             } else {
-                items(filteredVersions, key = { it.version }) { version ->
-                    VersionCard(version)
+                MaterialTheme.colorScheme.surface
+            }
+            val foreground = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .clickable(role = Role.Tab) { onChannelSelected(index) },
+                color = background,
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Box(
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        channel.title,
+                        color = foreground,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1
+                    )
                 }
             }
         }
@@ -338,7 +406,6 @@ private fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
                 Spacer(Modifier.height(4.dp))
 
                 AppThemeOption.entries.forEach { option ->
@@ -360,11 +427,7 @@ private fun SettingsScreen(
                                 .padding(start = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Text(
-                                option.title,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
+                            Text(option.title, fontWeight = FontWeight.Medium)
                             Text(
                                 option.description,
                                 style = MaterialTheme.typography.bodySmall,
