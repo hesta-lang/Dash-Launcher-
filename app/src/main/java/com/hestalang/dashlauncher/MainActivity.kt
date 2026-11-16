@@ -994,6 +994,16 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
     val profileManager = remember(context) { GameProfileManager(storageManager) }
     val installManager = remember(context) { GeometryDashInstallManager(context) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var instanceCheckEpoch by rememberSaveable { mutableIntStateOf(0) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) instanceCheckEpoch++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var localVersions by remember { mutableStateOf(emptyList<com.hestalang.dashlauncher.storage.LocalVersionRecord>()) }
     var selectedVersion by rememberSaveable { mutableStateOf("") }
@@ -1240,6 +1250,14 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                             selectedVersion,
                             profile.id
                         )
+                        val instanceIsInstalled = remember(instancePackageName, instanceCheckEpoch) {
+                            installManager.isPackageInstalled(instancePackageName)
+                        }
+                        Text(
+                            if (instanceIsInstalled) "Instancia instalada en Android" else "Instancia todavía no instalada",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Text(
                             "Paquete de esta instancia: " + instancePackageName,
                             style = MaterialTheme.typography.labelSmall,
@@ -1304,7 +1322,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                     statusMessage = it.message ?: "No se pudo iniciar esta instancia."
                                 }
                             },
-                            enabled = !isBusy,
+                            enabled = !isBusy && instanceIsInstalled,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Jugar esta instancia")
@@ -1356,7 +1374,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                         isBusy = false
                                     }
                                 },
-                                enabled = !isBusy && profiles.size > 1,
+                                enabled = !isBusy && profiles.size > 1 && !instanceIsInstalled,
                                 modifier = Modifier.weight(1f)
                             ) { Text("Eliminar") }
                         }
@@ -1391,7 +1409,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Instancias y compatibilidad", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Cada perfil genera un APK con un identificador Android distinto y una firma local de Dash Launcher; Android reserva un espacio de datos separado para cada paquete. Esta primera fase modifica el manifiesto y la tabla de recursos, pero no reescribe código DEX ni bibliotecas nativas. Si el análisis detecta referencias al paquete original, se mostrarán avisos y algunas funciones podrían no funcionar. La firma del clon no es la firma original de RobTop. Importar o exportar ZIP todavía solo guarda respaldos; no los aplica al progreso del juego.",
+                    "Cada perfil genera un APK con un identificador Android distinto y una firma local de Dash Launcher; Android reserva un espacio de datos separado para cada paquete. Esta primera fase modifica el manifiesto y la tabla de recursos, pero no reescribe código DEX ni bibliotecas nativas. Si el análisis detecta referencias al paquete original, se mostrarán avisos y algunas funciones podrían no funcionar. La firma del clon no es la firma original de RobTop. Importar o exportar ZIP todavía solo guarda respaldos; no los aplica al progreso del juego. Para eliminar un perfil, primero desinstala su instancia desde los ajustes de Android.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
