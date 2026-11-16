@@ -75,39 +75,34 @@ jobs:
             adb install -r profilefixture/build/outputs/apk/debug/profilefixture-debug.apk
             adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-            PROFILE_DIR="/sdcard/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation"
-
-            # The instrumented test reads the installed source APK, runs the real cloner,
-            # checks the generated manifest/signature, and verifies the original APK hash.
+            # The emulator action runs script lines in separate shells, so keep every
+            # path and package name literal instead of relying on shell variables.
+            # The instrumented test has already emitted this exact app-specific path.
             adb logcat -c
             gradle :app:connectedDebugAndroidTest
 
-            # Install the clone with adb, then prove both distinct package IDs launch.
-            adb pull "$PROFILE_DIR/instance.apk" profile-instance-validation.apk
+            # Install the clone, then prove both distinct package IDs launch.
+            adb pull /storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
             adb install -r profile-instance-validation.apk
 
-            ORIGINAL_PACKAGE="com.robtopx.geometryjump"
-            PROFILE_PACKAGE="com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74"
-            ORIGINAL_PATH="$(adb shell pm path "$ORIGINAL_PACKAGE" | tr -d '\r')"
-            PROFILE_PATH="$(adb shell pm path "$PROFILE_PACKAGE" | tr -d '\r')"
-            test -n "$ORIGINAL_PATH" || (echo "The original package was replaced or is missing."; exit 1)
-            test -n "$PROFILE_PATH" || (echo "The independent profile package was not installed."; exit 1)
+            adb shell pm path com.robtopx.geometryjump > original-package-path.txt
+            grep -q 'package:' original-package-path.txt || (echo "The original package was replaced or is missing."; exit 1)
+            adb shell pm path com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74 > profile-package-path.txt
+            grep -q 'package:' profile-package-path.txt || (echo "The independent profile package was not installed."; exit 1)
 
-            adb shell am force-stop "$ORIGINAL_PACKAGE"
-            adb shell am start -W -n "$ORIGINAL_PACKAGE/com.robtopx.geometryjump.FixtureActivity"
-            adb shell pidof "$ORIGINAL_PACKAGE" > /dev/null || (echo "The original package did not start."; exit 1)
+            adb shell am force-stop com.robtopx.geometryjump
+            adb shell am start -W -n com.robtopx.geometryjump/com.robtopx.geometryjump.FixtureActivity
+            adb shell pidof com.robtopx.geometryjump > /dev/null || (echo "The original package did not start."; exit 1)
 
-            adb shell am force-stop "$PROFILE_PACKAGE"
-            adb shell am start -W -n "$PROFILE_PACKAGE/com.robtopx.geometryjump.FixtureActivity"
-            adb shell pidof "$PROFILE_PACKAGE" > /dev/null || (echo "The profile package did not start."; exit 1)
+            adb shell am force-stop com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74
+            adb shell am start -W -n com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74/com.robtopx.geometryjump.FixtureActivity
+            adb shell pidof com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74 > /dev/null || (echo "The profile package did not start."; exit 1)
 
-            {
-              echo "Original package: $ORIGINAL_PACKAGE"
-              echo "$ORIGINAL_PATH"
-              echo "Profile package: $PROFILE_PACKAGE"
-              echo "$PROFILE_PATH"
-              echo "Both package IDs were installed and launched independently."
-            } > profile-install-validation.txt
+            printf '%s\n' 'Original package: com.robtopx.geometryjump' > profile-install-validation.txt
+            cat original-package-path.txt >> profile-install-validation.txt
+            printf '%s\n' 'Profile package: com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74' >> profile-install-validation.txt
+            cat profile-package-path.txt >> profile-install-validation.txt
+            printf '%s\n' 'Both package IDs were installed and launched independently.' >> profile-install-validation.txt
             adb logcat -d -t 5000 > profile-install-validation-logcat.txt
 
       - name: Upload release APK
