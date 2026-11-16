@@ -14,7 +14,8 @@ class CatalogDirectDownloadProviderTest {
         size: Long? = 1024L,
         hash: String? = validHash,
         id: String = "2.2081",
-        providerId: String = "direct"
+        providerId: String = "direct",
+        providerName: String? = null
     ) = VersionEntry(
         id = id,
         displayName = "Geometry Dash",
@@ -26,7 +27,8 @@ class CatalogDirectDownloadProviderTest {
         downloadUrl = url,
         sizeBytes = size,
         sha256 = hash,
-        providerId = providerId
+        providerId = providerId,
+        providerName = providerName
     )
 
     @Test
@@ -77,6 +79,39 @@ class CatalogDirectDownloadProviderTest {
         val filename = (result as DownloadResolution.Available).artifact.fileName
         assertTrue(filename.matches(Regex("^geometry-dash-[a-z0-9_-]+\\.apk$")))
         assertTrue(!filename.contains('/'))
+    }
+
+    @Test
+    fun externalProviderReturnsAnOpenPageInsteadOfADirectDownload() {
+        val external = ExternalCatalogPageProvider()
+        val result = external.resolve(
+            entry(
+                url = "https://uoldown.com/android/geometry-dash/download/12595",
+                size = null,
+                hash = null,
+                providerId = "external-page",
+                providerName = "Uoldown"
+            )
+        )
+        assertTrue(result is DownloadResolution.OpenExternalPage)
+        val page = result as DownloadResolution.OpenExternalPage
+        assertEquals("Uoldown", page.providerName)
+        assertTrue(page.url.startsWith("https://uoldown.com/"))
+    }
+
+    @Test
+    fun externalProviderRejectsUnlistedDomains() {
+        val external = ExternalCatalogPageProvider()
+        val result = external.resolve(
+            entry(
+                url = "https://example.com/file.apk",
+                size = null,
+                hash = null,
+                providerId = "external-page",
+                providerName = "Unknown"
+            )
+        )
+        assertTrue(result is DownloadResolution.Unavailable)
     }
 
     @Test
