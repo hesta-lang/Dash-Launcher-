@@ -11,9 +11,9 @@ import java.io.FileOutputStream
 
 /** Verifies and stores a completed system-managed private APK download. */
 class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters) : Worker(appContext, parameters) {
-    override fun doWork(): Result {
+    override fun doWork(): androidx.work.ListenableWorker.Result {
         val id = inputData.getLong(KEY_DOWNLOAD_ID, PrivateApkDownloadManager.NO_DOWNLOAD)
-        if (id == PrivateApkDownloadManager.NO_DOWNLOAD) return Result.failure()
+        if (id == PrivateApkDownloadManager.NO_DOWNLOAD) return androidx.work.ListenableWorker.Result.failure()
         val preferences = applicationContext.getSharedPreferences(PrivateApkDownloadManager.PREFERENCES, Context.MODE_PRIVATE)
         val json = preferences.getString(PrivateApkDownloadManager.VERSION_KEY_PREFIX + id, null)
             ?: return fail(preferences, id, "No se encontró la información de la versión descargada.")
@@ -51,7 +51,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
                 .putString(PrivateApkDownloadManager.RESULT_KEY, "APK verificado y guardado en ${stored.apkFile.absolutePath}.")
                 .commit()
             downloadManager.remove(id)
-            return Result.success()
+            return androidx.work.ListenableWorker.Result.success()
         } catch (error: Exception) {
             return fail(preferences, id, error.message ?: "No se pudo verificar ni guardar el APK descargado.")
         } finally {
@@ -68,13 +68,13 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
         }
     }
 
-    private fun fail(preferences: android.content.SharedPreferences, id: Long, message: String): Result {
+    private fun fail(preferences: android.content.SharedPreferences, id: Long, message: String): androidx.work.ListenableWorker.Result {
         preferences.edit()
             .remove(PrivateApkDownloadManager.VERSION_KEY_PREFIX + id)
             .remove(PrivateApkDownloadManager.ACTIVE_ID_KEY)
             .putString(PrivateApkDownloadManager.RESULT_KEY, message)
             .commit()
-        return Result.failure()
+        return androidx.work.ListenableWorker.Result.failure()
     }
 
     companion object { const val KEY_DOWNLOAD_ID = "private_download_id" }
