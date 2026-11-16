@@ -1,45 +1,81 @@
-# Local version storage
+# Local version and instance storage
 
-Dash Launcher keeps every saved Geometry Dash APK and its per-version profile root under one app-specific directory named `versions`.
+Dash Launcher uses a Prism-style layout: a shared library of verified game versions, a separate directory for every instance, and a cache area for rebuildable temporary files.
 
 ## Directory location
 
-The app first uses Android's app-specific external files directory:
+The storage root is the app-specific external files directory:
 
 ```text
-/storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/versions/
+/storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/
 ```
 
 If Android does not provide that directory, Dash Launcher falls back to:
 
 ```text
-/data/user/0/com.hestalang.dashlauncher/files/versions/
+/data/user/0/com.hestalang.dashlauncher/files/
 ```
 
-This is app-specific storage. Dash Launcher can read and write it without requesting broad storage permissions. Other apps and file managers may not be able to browse it freely. Android removes app-specific files when Dash Launcher is uninstalled, so users should export or back up files before uninstalling the launcher.
+This is app-specific storage. Dash Launcher can read and write it without requesting broad storage permissions. Other apps and file managers may not be able to browse it freely. Android removes app-specific files when Dash Launcher is uninstalled, so export or back up important files before uninstalling the launcher.
 
 ## Layout
 
-Each stored version receives its own folder:
-
 ```text
-versions/
-├── 2.2081/
-│   ├── game.apk
-│   ├── metadata.json
-│   └── profile/
-└── 2.2091/
-    ├── game.apk
-    ├── metadata.json
-    └── profile/
+files/
+├── versions/
+│   ├── 2.2081/
+│   │   ├── game.apk
+│   │   ├── metadata.json
+│   │   └── active-profile.txt
+│   └── 2.2091/
+│       ├── game.apk
+│       └── metadata.json
+├── instances/
+│   ├── v322e32303831--default/
+│   │   ├── instance.json
+│   │   ├── instance.apk
+│   │   └── backups/
+│   │       └── game-data.zip
+│   └── v322e32303831--<instance-id>/
+│       ├── instance.json
+│       └── backups/
+└── cache/
 ```
 
-- `game.apk` is written only after the download has passed the catalog's size, SHA-256, package, signing-certificate, and ABI checks and the stored copy passes its own size and SHA-256 checks.
-- `metadata.json` stores the version, display name, APK size/hash, package name, signing-certificate fingerprint, and metadata schema version.
-- `profile/` is the reserved per-version data root. A companion integration still needs to export/import actual Geometry Dash progress, settings, levels, and Geode configuration. The folder existing does not mean those game-private files have already been captured.
+### Shared version library
 
-## Important installation limitation
+- `versions/<version>/game.apk` is the single verified source APK for that game version. It is checked against the catalog's size, SHA-256, package, signing-certificate fingerprint, and ABI before storage.
+- `metadata.json` records the version identity, display name, APK size/hash, package name, and signing-certificate fingerprint.
+- Several instances of the same game version reuse this source APK. Creating a new instance does not download another copy of the original APK.
 
-This storage layer preserves separate APK files and per-version profile directories. It does **not** make Android run several ordinary installations of the same Geometry Dash package at once. Android identifies installed apps by package name and signing identity; a collection of APK files in `versions/` is not the same as separately installed/running game instances.
+### Isolated instances
 
-The profile storage is therefore the foundation for a later version-isolation layer. Any future launch or switching mechanism must separately solve app identity, package/signature compatibility, and authorized import/export of the game's private data. Dash Launcher does not read another app's private `/data/user/0/` directory directly.
+- Each version/instance pair has a unique directory under `instances/`. The folder name is based on the version and stable instance ID, not the editable display name.
+- `instance.json` stores the instance name, version, creation/update times, and backup metadata.
+- `instance.apk` is the profile-specific APK generated from the shared source when the user requests installation or update. It has its own Android package identity and local Dash Launcher signature.
+- `backups/game-data.zip` is an opaque backup imported or exported by the launcher. It is not extracted into the game's private data directory.
+- Android stores each installed package's private data in its own sandbox. The launcher-side `instances/` folder does not replace or directly access that sandbox.
+
+### Cache
+
+The sibling `cache/` folder is reserved for temporary or rebuildable data. It is not the authoritative copy of a game version or instance.
+
+## Safe migration from older layouts
+
+Older builds stored profiles below:
+
+```text
+versions/<version>/profile/profiles/<profile-id>/
+```
+
+When a version's instances are opened, Dash Launcher copies recognized metadata, generated instance APKs, and ZIP backups into the new `instances/` layout. The old files are deliberately retained; a successful migration does not delete the previous copy. The active-instance pointer is moved to `versions/<version>/active-profile.txt`, while the old pointer remains as a fallback source.
+
+The existing `versions/<version>/game.apk` files are not moved or rewritten by this layout change.
+
+## Android / game-data boundary
+
+Android identifies installed apps by package name and signing identity. The original Geometry Dash package remains separate from each Dash Launcher-created package; no installed app is automatically uninstalled or overwritten by instance creation. The Android installer still requires user confirmation.
+
+Changing an APK's package identity does not guarantee that every game feature will work. Dash Launcher currently changes the binary manifest and resource-table package identity, but does not rewrite package references inside DEX files or native libraries. Those references are analyzed and reported as warnings. A real Geometry Dash version must still be tested on-device; a CI fixture only validates the packaging mechanics.
+
+Dash Launcher cannot directly read or write another app's private `/data/user/0/` directory. A supported Geode companion bridge is still needed to export/import actual progress, settings, created levels, and mod configuration. The current ZIP import/export functions store backups only and do not claim to restore in-game progress.
