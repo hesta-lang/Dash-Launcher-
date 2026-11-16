@@ -54,6 +54,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
             downloadManager.remove(id)
             return androidx.work.ListenableWorker.Result.success()
         } catch (error: Exception) {
+            downloadManager.remove(id)
             return fail(preferences, id, error.message ?: "No se pudo verificar ni guardar el APK descargado.")
         } finally {
             temporary.delete()
