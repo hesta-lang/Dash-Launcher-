@@ -115,6 +115,12 @@ class PrivateStorageCatalogRepository {
         require(assetSize == version.sizeBytes) {
             "El tamaño del APK publicado no coincide con el catálogo privado."
         }
+        val publishedDigest = asset.get("digest")?.takeIf { !it.isJsonNull }?.asString
+        if (publishedDigest != null) {
+            require(publishedDigest.equals("sha256:${version.sha256}", ignoreCase = true)) {
+                "El SHA-256 del release no coincide con el catálogo privado."
+            }
+        }
         val assetId = asset.get("id")?.asLong
             ?: throw IllegalStateException("GitHub no devolvió el ID del APK privado.")
         val apiAssetUrl = "https://api.github.com/repos/hesta-lang/Dash-Launcher-Private-Storage/releases/assets/$assetId"
