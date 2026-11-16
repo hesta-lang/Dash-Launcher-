@@ -609,7 +609,9 @@ private fun CatalogVersionCard(
                             sizeBytes = details.artifact?.sizeBytes,
                             sha256 = details.artifact?.sha256,
                             providerId = details.artifact?.providerId ?: "direct",
-                            providerName = details.artifact?.providerName
+                            providerName = details.artifact?.providerName,
+                            packageName = details.artifact?.packageName,
+                            signingCertificateSha256 = details.artifact?.signingCertificateSha256
                         )
                         val resolution = when {
                             !apiCompatible -> DownloadResolution.Unavailable(
@@ -786,7 +788,7 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
                     when (verification) {
                         is DownloadVerification.Verified -> {
                             isVerified = true
-                            statusMessage = "APK descargado y verificado. Está guardado en el almacenamiento privado de Dash Launcher."
+                            statusMessage = "APK verificado: SHA-256, paquete, certificado y ABI coinciden. El archivo está guardado en Dash Launcher; todavía no se ha instalado."
                         }
                         is DownloadVerification.Rejected -> {
                             statusMessage = verification.reason
