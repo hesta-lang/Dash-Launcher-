@@ -38,8 +38,23 @@ versions/
 - `metadata.json` stores the version, display name, APK size/hash, package name, signing-certificate fingerprint, and metadata schema version.
 - `profile/` is the reserved per-version data root. A companion integration still needs to export/import actual Geometry Dash progress, settings, levels, and Geode configuration. The folder existing does not mean those game-private files have already been captured.
 
-## Important installation limitation
+## Independent installation for each version
 
-This storage layer preserves separate APK files and per-version profile directories. It does **not** make Android run several ordinary installations of the same Geometry Dash package at once. Android identifies installed apps by package name and signing identity; a collection of APK files in `versions/` is not the same as separately installed/running game instances.
+Dash Launcher can create one Android installation per Geometry Dash version. The verified source APK remains at `versions/<version>/game.apk`; the separately installable clone is kept in that version's `profile/` folder.
 
-The profile storage is therefore the foundation for a later version-isolation layer. Any future launch or switching mechanism must separately solve app identity, package/signature compatibility, and authorized import/export of the game's private data. Dash Launcher does not read another app's private `/data/user/0/` directory directly.
+The package ID is deterministic from the version string:
+
+- `2.2081` → `com.hestalang.dashlauncher.gd.v2_2081`
+- `2.2091` → `com.hestalang.dashlauncher.gd.v2_2091`
+
+Android treats these as different apps, so installing one does not replace another. The original `com.robtopx.geometryjump` package is not uninstalled or modified. Each installed package receives its own Android application sandbox.
+
+### APK transformation and limitations
+
+To create a second installable package, Dash Launcher rewrites the binary manifest and resource-table package identity, then signs the resulting APK with a persistent local Android Keystore key owned by Dash Launcher. The downloaded `game.apk` remains unchanged and keeps the source APK's original bytes and signature.
+
+The current cloner does **not** rewrite package-name strings inside DEX files or native libraries. It reports detected references as warnings, because they may be harmless or may indicate code that expects the original package ID. A Geometry Dash version that validates or relies on `com.robtopx.geometryjump` internally may fail to start or may have broken features after cloning. Package-identity checks do not substitute for testing each real APK on a device.
+
+The derived package is signed by Dash Launcher, not by RobTop. It is a separate installation, not an official RobTop update. Since Android gives each package its own private data directory, progress and settings are not automatically shared between versions. Dash Launcher does not read another app's private `/data/user/0/` directory directly.
+
+The signing key is stored in Dash Launcher's app data. Removing Dash Launcher's data or uninstalling it may remove that key; an already installed clone could then reject a future in-place update signed with a newly generated key.

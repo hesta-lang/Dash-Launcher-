@@ -17,6 +17,7 @@ android {
         targetSdk = 35
         versionCode = ciVersionCode
         versionName = "0.1.$ciVersionCode"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -30,10 +31,12 @@ android {
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Keep R8 out of the startup path until the minified Compose crash is
+            // diagnosed with a retraceable mapping. A stable launch takes priority
+            // over APK size; shrinking can be re-enabled after the release smoke test.
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
@@ -57,8 +60,15 @@ baselineProfile {
 
 dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("io.github.reandroid:ARSCLib:1.4.0")
+    implementation("com.android.tools.build:apksig:8.7.3")
 
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.ui:ui")

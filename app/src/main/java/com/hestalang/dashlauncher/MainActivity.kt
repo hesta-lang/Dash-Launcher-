@@ -58,6 +58,8 @@ import com.hestalang.dashlauncher.data.CatalogVersionMetadata
 import com.hestalang.dashlauncher.data.CatalogVersionRecord
 import com.hestalang.dashlauncher.data.RemoteVersionCatalogRepository
 import com.hestalang.dashlauncher.data.VersionEntry
+import com.hestalang.dashlauncher.install.GeometryDashInstallManager
+import com.hestalang.dashlauncher.install.VersionInstallationManager
 import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
 import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
 import com.hestalang.dashlauncher.download.ExternalCatalogPageProvider
@@ -67,6 +69,7 @@ import com.hestalang.dashlauncher.download.DownloadStatus
 import com.hestalang.dashlauncher.download.DownloadVerification
 import com.hestalang.dashlauncher.storage.VersionStorageManager
 import com.hestalang.dashlauncher.storage.VersionStorageSnapshot
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -844,6 +847,8 @@ private fun VersionDownloadAction(
 ) {
     val context = LocalContext.current
     val storageManager = remember(context) { VersionStorageManager(context) }
+    val installManager = remember(context) { GeometryDashInstallManager(context) }
+    val versionInstaller = remember(context) { VersionInstallationManager() }
 
     if (resolution is DownloadResolution.OpenExternalPage) {
         Button(
@@ -872,12 +877,21 @@ private fun VersionDownloadAction(
 
     val coordinator = remember(context) { ApkDownloadCoordinator(context) }
     val artifact = (resolution as? DownloadResolution.Available)?.artifact
+    val existingStoredApkPath = remember(artifact?.versionLabel) {
+        artifact?.let { item ->
+            storageManager.listVersions()
+                .firstOrNull { it.version == item.versionLabel && it.hasApk }
+                ?.apkFile?.absolutePath
+        }
+    }
+    var storedApkPath by rememberSaveable(artifact?.fileName) {
+        mutableStateOf(existingStoredApkPath)
+    }
 
     var downloadId by rememberSaveable(artifact?.fileName) { mutableStateOf<Long?>(null) }
     var progressPercent by remember(artifact?.fileName) { mutableIntStateOf(0) }
     var statusMessage by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
     var isVerified by rememberSaveable(artifact?.fileName) { mutableStateOf(false) }
-    var verifiedUriString by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(downloadId, artifact) {
         val id = downloadId ?: return@LaunchedEffect
@@ -908,8 +922,6 @@ private fun VersionDownloadAction(
                     }
                     when (verification) {
                         is DownloadVerification.Verified -> {
-                            isVerified = true
-                            verifiedUriString = verification.uri.toString()
                             try {
                                 val storedVersion = withContext(Dispatchers.IO) {
                                     val source = context.contentResolver.openInputStream(verification.uri)
@@ -924,14 +936,15 @@ private fun VersionDownloadAction(
                                         signingCertificateSha256 = item.expectedSigningCertificateSha256
                                     )
                                 }
+                                storedApkPath = storedVersion.apkFile.absolutePath
+                                isVerified = true
                                 onApkStored()
-                                statusMessage = "APK verificado y guardado en " +
-                                    storedVersion.apkFile.absolutePath +
-                                    ". Android todavía debe confirmar la instalación."
+                                statusMessage = "APK verificado y guardado. Ahora puedes instalar Geometry Dash " +
+                                    item.versionLabel + " como una aplicación independiente."
                             } catch (error: Exception) {
-                                statusMessage = "El APK fue verificado, pero no se pudo guardar en versions/: " +
-                                    (error.message ?: "error de almacenamiento") +
-                                    ". Todavía puedes instalarlo desde la descarga verificada."
+                                isVerified = false
+                                statusMessage = "El APK fue verificado, pero no se pudo guardar para preparar la instalación: " +
+                                    (error.message ?: "error de almacenamiento")
                             }
                         }
                         is DownloadVerification.Rejected -> {
@@ -1000,46 +1013,80 @@ private fun VersionDownloadAction(
             )
         }
 
-        if (isVerified && !verifiedUriString.isNullOrBlank()) {
+        val gameVersion = artifact.versionLabel
+        val versionPackageName = VersionInstallationManager.packageNameForVersion(gameVersion)
+        val sourceApkPath = storedApkPath
+
+        if (sourceApkPath != null && File(sourceApkPath).isFile) {
             Button(
                 onClick = {
-                    val apkUri = Uri.parse(verifiedUriString)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !context.packageManager.canRequestPackageInstalls()
-                    ) {
-                        runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                    Uri.parse("package:" + context.packageName)
-                                )
-                            )
-                        }.onSuccess {
-                            statusMessage = "Autoriza a Dash Launcher para instalar aplicaciones y vuelve a pulsar Instalar / actualizar."
-                        }.onFailure {
-                            statusMessage = "No se pudo abrir el permiso de instalación de Android."
+                    runCatching {
+                        val sourceApk = File(sourceApkPath)
+                        val storedVersion = storageManager.listVersions()
+                            .firstOrNull { it.version == gameVersion && it.hasApk }
+                            ?: throw IllegalStateException("No se encontró el APK verificado de esta versión.")
+                        val prepared = versionInstaller.prepare(
+                            sourceApk = sourceApk,
+                            version = gameVersion,
+                            outputDirectory = storedVersion.profileDirectory
+                        )
+                        val result = installManager.openInstallerForPackage(
+                            apkFile = prepared.apkFile,
+                            expectedPackageName = prepared.packageName
+                        )
+                        when (result) {
+                            com.hestalang.dashlauncher.install.InstallRequestResult.PERMISSION_REQUIRED -> {
+                                statusMessage = "Autoriza a Dash Launcher a instalar aplicaciones y vuelve a pulsar Instalar versión."
+                            }
+                            com.hestalang.dashlauncher.install.InstallRequestResult.INSTALLER_OPENED -> {
+                                statusMessage = buildString {
+                                    append("Se abrió el instalador de Geometry Dash ")
+                                    append(gameVersion)
+                                    append(". Confirma la instalación; las otras versiones no se eliminarán.")
+                                    if (prepared.warnings.isNotEmpty()) {
+                                        append(" Advertencias de compatibilidad: ")
+                                        append(prepared.warnings.joinToString(" "))
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        runCatching {
-                            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE)
-                                .setDataAndType(
-                                    apkUri,
-                                    "application/vnd.android.package-archive"
-                                )
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(installIntent)
-                        }.onSuccess {
-                            statusMessage = "Se abrió el instalador de Android. Revisa que el paquete y la versión sean correctos y confirma la actualización."
-                        }.onFailure { error ->
-                            statusMessage = error.message ?: "No se pudo abrir el instalador de Android."
-                        }
+                    }.onFailure { error ->
+                        statusMessage = error.message ?: "No se pudo preparar la instalación independiente."
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Instalar / actualizar")
+                Text(
+                    if (installManager.isPackageInstalled(versionPackageName)) {
+                        "Reinstalar versión"
+                    } else {
+                        "Instalar versión"
+                    }
+                )
             }
         }
+
+        Button(
+            onClick = {
+                runCatching {
+                    if (!installManager.isPackageInstalled(versionPackageName)) {
+                        throw IllegalStateException("Esta versión todavía no está instalada. Descarga e instala primero el APK.")
+                    }
+                    installManager.launchGame(versionPackageName)
+                }.onFailure { error ->
+                    statusMessage = error.message ?: "No se pudo iniciar esta versión."
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Jugar Geometry Dash " + gameVersion)
+        }
+
+        Text(
+            "Cada versión se instala con un paquete Android propio. Instalar o jugar una versión no reemplaza las demás ni la instalación original.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         statusMessage?.let { message ->
             Text(
