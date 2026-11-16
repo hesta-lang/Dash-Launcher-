@@ -81,7 +81,7 @@ import com.hestalang.dashlauncher.download.DownloadVerification
 import com.hestalang.dashlauncher.storage.VersionStorageManager
 import com.hestalang.dashlauncher.storage.VersionStorageSnapshot
 import com.hestalang.dashlauncher.storage.GameProfileManager
-import com.hestalang.dashlauncher.security.GitHubAccessTokenStore
+import com.hestalang.dashlauncher.security.GitHubSessionStore
 import com.hestalang.dashlauncher.private_storage.GitHubPrivateStorageRepository
 import com.hestalang.dashlauncher.private_storage.PrivateVersionInfo
 import com.hestalang.dashlauncher.private_storage.PrivateApkDownloadManager
@@ -633,12 +633,12 @@ private fun LocalVersionStorageCard(
 @Composable
 private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     val context = LocalContext.current
-    val tokenStore = remember(context) { GitHubAccessTokenStore(context) }
+    val sessionStore = remember(context) { GitHubSessionStore(context) }
     val repository = remember(context) { GitHubPrivateStorageRepository(context) }
     val downloadManager = remember(context) { PrivateApkDownloadManager(context) }
     val downloadScope = androidx.compose.runtime.rememberCoroutineScope()
 
-    var token by remember { mutableStateOf<String?>(null) }
+    var sessionToken by remember { mutableStateOf<String?>(null) }
     var versions by remember { mutableStateOf<List<PrivateVersionInfo>>(emptyList()) }
     var isRefreshing by remember { mutableStateOf(false) }
     var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
@@ -650,18 +650,30 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(tokenStore) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumeRefresh by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeRefresh++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(sessionStore, resumeRefresh) {
         runCatching {
-            withContext(Dispatchers.IO) { tokenStore.readToken() }
+            withContext(Dispatchers.IO) { sessionStore.readSession() }
         }.onSuccess {
-            token = it
+            sessionToken = it
         }.onFailure {
-            loadError = it.message ?: "No se pudo leer la credencial del almacenamiento privado."
+            sessionToken = null
+            loadError = it.message ?: "No se pudo leer la sesión del almacenamiento privado."
         }
     }
 
-    LaunchedEffect(refreshCounter, token) {
-        val accessToken = token ?: return@LaunchedEffect
+    LaunchedEffect(refreshCounter, sessionToken) {
+        val accessToken = sessionToken ?: return@LaunchedEffect
         isRefreshing = true
         loadError = null
         runCatching {
@@ -750,15 +762,15 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "Catálogo privado de APK alojados en tu repositorio de GitHub.",
+                    "Catálogo de APK privado, servido por el backend seguro de Dash Launcher.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            if (token == null) {
+            if (sessionToken == null) {
                 Text(
-                    "Conecta un token fine-grained desde Configuración → Almacenamiento privado para consultar este repositorio.",
+                    "Inicia sesión con GitHub desde Configuración → Almacenamiento privado para consultar el repositorio privado.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -799,7 +811,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                             Text(item.warning, style = MaterialTheme.typography.bodySmall)
                             Button(
                                 onClick = {
-                                    val accessToken = token
+                                    val accessToken = sessionToken
                                     if (accessToken == null) {
                                         statusMessage = "Conecta el almacenamiento privado antes de descargar."
                                     } else {
@@ -874,41 +886,26 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
 @Composable
 private fun PrivateStorageSettingsCard() {
     val context = LocalContext.current
-    val tokenStore = remember(context) { GitHubAccessTokenStore(context) }
+    val sessionStore = remember(context) { GitHubSessionStore(context) }
     val repository = remember(context) { GitHubPrivateStorageRepository(context) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    var tokenDraft by rememberSaveable { mutableStateOf("") }
     var connected by remember { mutableStateOf(false) }
-    var isSaving by remember { mutableStateOf(false) }
-    var validationRequest by remember { mutableIntStateOf(0) }
+    var isConnecting by remember { mutableStateOf(false) }
+    var refreshEpoch by remember { mutableIntStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(tokenStore) {
-        connected = withContext(Dispatchers.IO) { tokenStore.hasToken() }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshEpoch++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(validationRequest) {
-        if (validationRequest == 0) return@LaunchedEffect
-        val submittedToken = tokenDraft.trim()
-        if (submittedToken.isBlank()) {
-            statusMessage = "Pega el token fine-grained antes de continuar."
-            return@LaunchedEffect
-        }
-        isSaving = true
-        statusMessage = "Comprobando acceso al repositorio privado…"
-        runCatching {
-            withContext(Dispatchers.IO) {
-                repository.validateAccess(submittedToken)
-                tokenStore.saveToken(submittedToken)
-            }
-        }.onSuccess {
-            connected = true
-            tokenDraft = ""
-            statusMessage = "Conexión verificada. La credencial quedó cifrada con Android Keystore."
-        }.onFailure {
-            statusMessage = it.message ?: "No se pudo validar el token."
-        }
-        isSaving = false
+    LaunchedEffect(sessionStore, refreshEpoch) {
+        connected = withContext(Dispatchers.IO) { sessionStore.hasSession() }
     }
 
     Card(
@@ -928,60 +925,76 @@ private fun PrivateStorageSettingsCard() {
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                "Conecta Dash Launcher con hesta-lang/Dash-Launcher-Private-Storage.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            OutlinedTextField(
-                value = tokenDraft,
-                onValueChange = { tokenDraft = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Token fine-grained de GitHub") },
-                placeholder = { Text("github_pat_…") },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                enabled = !isSaving,
-                shape = RoundedCornerShape(12.dp)
-            )
-            Text(
-                "Crea un fine-grained personal access token para SOLO este repositorio. Permiso: Contents → Read-only (Metadata se concede automáticamente). No uses un token classic con acceso general a tus repositorios.",
+                "Conecta Dash Launcher con tu cuenta de GitHub. El acceso al repositorio se realiza desde un backend seguro; no necesitas crear ni pegar un token.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Button(
-                onClick = { validationRequest++ },
-                enabled = !isSaving && tokenDraft.isNotBlank(),
+                onClick = {
+                    isConnecting = true
+                    statusMessage = "Preparando el inicio de sesión seguro…"
+                    scope.launch {
+                        runCatching {
+                            val authUrl = withContext(Dispatchers.IO) {
+                                val verifier = GitHubOAuthPkce.newVerifier()
+                                sessionStore.savePendingVerifier(verifier)
+                                repository.createLoginUrl(GitHubOAuthPkce.challenge(verifier))
+                            }
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
+                        }.onSuccess {
+                            statusMessage = "Completa el inicio de sesión de GitHub en el navegador y vuelve a Dash Launcher."
+                        }.onFailure {
+                            sessionStore.clearPendingVerifier()
+                            statusMessage = it.message ?: "No se pudo iniciar el inicio de sesión."
+                        }
+                        isConnecting = false
+                    }
+                },
+                enabled = !isConnecting,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (isSaving) "Comprobando…" else "Guardar y comprobar")
+                Text(if (isConnecting) "Preparando…" else if (connected) "Volver a conectar GitHub" else "Conectar con GitHub")
             }
+
             if (connected) {
-                Text("Almacenamiento conectado", color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "Sesión de Dash Launcher guardada de forma cifrada en Android Keystore.",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Button(
                     onClick = {
-                        runCatching { tokenStore.clearToken() }
+                        runCatching { sessionStore.clearSession() }
                             .onSuccess {
                                 connected = false
-                                tokenDraft = ""
-                                statusMessage = "Credencial eliminada del dispositivo."
+                                statusMessage = "Sesión desconectada de este dispositivo."
                             }
                             .onFailure { statusMessage = it.message }
                     },
-                    enabled = !isSaving,
+                    enabled = !isConnecting,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Desconectar")
                 }
             } else {
                 Text(
-                    "No hay ninguna credencial conectada.",
+                    "No hay una sesión conectada. El servidor solo autoriza las cuentas incluidas en su lista de acceso.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            Text(
+                "La clave privada de la GitHub App, el secreto OAuth y los tokens de instalación permanecen en el servidor. Android solo conserva una sesión temporal de Dash Launcher.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             statusMessage?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
