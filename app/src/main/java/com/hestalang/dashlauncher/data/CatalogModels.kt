@@ -28,7 +28,9 @@ data class CatalogArtifactMetadata(
     val url: String?,
     val sizeBytes: Long?,
     val sha256: String?,
-    val providerName: String?
+    val providerName: String?,
+    val packageName: String?,
+    val signingCertificateSha256: String?
 )
 
 data class CatalogVersionMetadata(
@@ -146,7 +148,12 @@ object CatalogJsonParser {
             val url = optionalString(value.get("url"))
             val size = optionalLong(value.get("sizeBytes"))
             val hash = optionalString(value.get("sha256"))
+            val packageName = optionalString(value.get("packageName"))
+            val signingCertificateSha256 = optionalString(value.get("signingCertificateSha256"))
 
+            require(provider == "direct" || provider == "external-page") {
+                "El proveedor de artefacto no está admitido."
+            }
             if (provider == "direct") {
                 require(abis.isNotEmpty()) {
                     "El proveedor direct requiere al menos una ABI verificada."
@@ -160,6 +167,12 @@ object CatalogJsonParser {
                 require(!hash.isNullOrBlank() && sha256Pattern.matches(hash)) {
                     "El proveedor direct requiere un SHA-256 de 64 caracteres hexadecimales."
                 }
+                require(packageName == "com.robtopx.geometryjump") {
+                    "El APK directo debe declarar el paquete oficial com.robtopx.geometryjump."
+                }
+                require(!signingCertificateSha256.isNullOrBlank() && sha256Pattern.matches(signingCertificateSha256)) {
+                    "El APK directo requiere la huella SHA-256 verificada del certificado de firma."
+                }
             }
             if (provider == "external-page") {
                 require(!providerName.isNullOrBlank()) {
@@ -168,8 +181,17 @@ object CatalogJsonParser {
                 require(!url.isNullOrBlank() && isValidExternalPageUrl(url)) {
                     "El proveedor externo requiere una página HTTPS de un dominio permitido."
                 }
+                require(abis.isEmpty()) {
+                    "Una referencia externa no puede declarar ABI sin verificar."
+                }
+                require(packageName == null && signingCertificateSha256 == null) {
+                    "Una referencia externa no puede declarar identidad de un APK no verificado."
+                }
+                require(size == null && hash == null) {
+                    "Una referencia externa no puede declarar tamaño o hash de un APK."
+                }
             }
-            CatalogArtifactMetadata(provider, url, size, hash, providerName)
+            CatalogArtifactMetadata(provider, url, size, hash, providerName, packageName, signingCertificateSha256)
         }
 
         return CatalogVersionMetadata(
