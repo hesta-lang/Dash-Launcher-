@@ -11,5 +11,6 @@ data class VersionEntry(
     val downloadUrl: String?,
     val sizeBytes: Long?,
     val sha256: String?,
-    val providerId: String = "direct"
+    val providerId: String = "direct",
+    val providerName: String? = null
 )
