@@ -1,4 +1,4 @@
-# Private storage and per-version profiles
+# Private storage and instances
 
 ## Private GitHub storage through the Dash Launcher backend
 
@@ -38,29 +38,74 @@ signature, but its certificate has **not** been verified as the official RobTop
 signing certificate. The launcher preserves that warning and checks the exact
 pinned certificate fingerprint; it does not label the APK official.
 
-## Profile layout
+## Prism-style storage model
 
-Named profile containers are stored under each version:
+Prism Launcher separates a shared launcher root from individual game instances. Its
+root contains shared assets, libraries, metadata, and cache, while the `instances/`
+folder contains user instances. Within a Minecraft instance, the game root supplies
+instance-specific settings and save directories. Dash Launcher adapts that model
+to Android's package sandbox:
 
 ```text
-versions/
-└── 2.2091/
-    ├── game.apk
-    ├── metadata.json
-    └── profile/
-        ├── active-profile.txt
-        └── profiles/
-            ├── default/
-            │   └── profile.json
-            └── <profile-id>/
-                ├── profile.json
-                └── game-data.zip
+files/
+├── versions/
+│   └── <game-version>/
+│       ├── game.apk
+│       ├── metadata.json
+│       └── active-profile.txt
+├── instances/
+│   └── <version-token>--<instance-id>/
+│       ├── instance.json
+│       ├── instance.apk
+│       └── backups/
+│           └── game-data.zip
+└── cache/
 ```
 
-The profile manager supports create, list, activate, rename, delete, and import/export of opaque ZIP backup files. The ZIP is stored and validated as an archive; it is not extracted into the game.
+### Shared version library
 
-## Android / game-data boundary
+`versions/<game-version>/game.apk` is stored once after its catalog verification.
+All named instances for that version use this same source APK to produce their own
+package-specific install artifact. The source APK is not changed when an instance
+is created or updated.
 
-This is a launcher-side profile manager, not yet an in-game save isolation mechanism. Android prevents Dash Launcher from directly reading or writing Geometry Dash's private `/data/user/0/com.robtopx.geometryjump/` directory. Selecting a profile in Dash Launcher changes the selected launcher profile only. It does not switch the running game's save, nor does it create parallel installations of the same package.
+### Independent instances
 
-To make profiles represent actual progress, a companion Geode mod must export/import the game save, settings, levels and (where appropriate) mod configuration using a documented, integrity-checked archive protocol. The current release does not pretend that this companion bridge already exists.
+Each directory below `instances/` represents one version/instance pair. Its
+`instance.json` keeps the instance ID, version, editable name, timestamps, and
+backup metadata. The stable ID is independent of the display name, so renaming an
+instance does not change its Android package name.
+
+The generated `instance.apk` is stored with that instance. Each generated package
+is signed with the persistent Dash Launcher Android Keystore identity. Android
+installs it as a different package and allocates a separate private app-data
+sandbox. The original Geometry Dash package and other instances are not removed
+or replaced by this operation.
+
+### Android / game-data boundary
+
+The app-specific `instances/` folder is launcher-managed storage; it is not the
+game's private data directory. Android prevents Dash Launcher from directly
+reading or writing another app's `/data/user/0/` directory. Selecting an active
+instance in Dash Launcher is a launcher preference, while starting an installed
+instance launches the corresponding Android package.
+
+The current APK rewriter updates the binary manifest and resource-table package
+identity, but does not rewrite package strings in DEX or native libraries. Such
+references are reported as warnings, and some game features may still expect the
+original package. A successful fixture test does not prove that a real Geometry
+Dash build will work after repackaging.
+
+The backup ZIP is stored at `instances/<instance-id>/backups/game-data.zip`.
+Import/export validates and stores the archive but does not extract it into the
+game or restore progress. A companion Geode bridge with an explicit backup
+protocol is still required for actual save/settings/mod-data transfer.
+
+## Safe migration
+
+Older builds stored profile metadata and backup files below
+`versions/<version>/profile/profiles/<profile-id>/`. On opening a version,
+Dash Launcher copies recognized files into the new top-level `instances/`
+folder. It retains the legacy files and the original shared `game.apk`; the
+migration is non-destructive. The old per-version active pointer is read and
+copied to `versions/<version>/active-profile.txt`.
