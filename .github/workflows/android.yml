@@ -52,7 +52,22 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
-          script: gradle :app:assembleRelease
+          script: |
+            gradle :app:assembleRelease
+
+            # Exercise the optimized APK on the API 29 emulator, not just the compiler.
+            adb install -r app/build/outputs/apk/release/app-release.apk
+            adb shell am force-stop com.hestalang.dashlauncher
+            adb shell am start -W -n com.hestalang.dashlauncher/.MainActivity
+            sleep 5
+
+            RESUMED_ACTIVITY="$(adb shell dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity' || true)"
+            echo "$RESUMED_ACTIVITY"
+            if ! printf '%s' "$RESUMED_ACTIVITY" | grep -q 'com.hestalang.dashlauncher'; then
+              echo "Dash Launcher did not remain in the foreground after cold start."
+              adb logcat -d -t 500 -s AndroidRuntime:E ActivityManager:E ActivityTaskManager:E
+              exit 1
+            fi
 
       - name: Upload optimized release APK
         uses: actions/upload-artifact@v4
