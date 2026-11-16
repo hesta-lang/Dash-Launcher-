@@ -17,6 +17,21 @@ class GitHubSessionStore(context: Context) {
         Context.MODE_PRIVATE
     )
 
+    init {
+        // Remove the encrypted PAT left by an earlier development build.
+        context.applicationContext
+            .getSharedPreferences(LEGACY_PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+        runCatching {
+            val keyStore = KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }
+            if (keyStore.containsAlias(LEGACY_KEY_ALIAS)) {
+                keyStore.deleteEntry(LEGACY_KEY_ALIAS)
+            }
+        }
+    }
+
     @Synchronized
     fun saveSession(session: String) {
         require(session.length in 60..2048 && session.contains(".")) {
@@ -115,6 +130,8 @@ class GitHubSessionStore(context: Context) {
     companion object {
         private const val ANDROID_KEY_STORE = "AndroidKeyStore"
         private const val KEY_ALIAS = "dash_launcher_backend_session_v1"
+        private const val LEGACY_KEY_ALIAS = "dash_launcher_private_storage_v1"
+        private const val LEGACY_PREFERENCES_NAME = "private_storage_credentials"
         private const val PREFERENCES_NAME = "dash_launcher_backend_session"
         private const val SESSION_KEY = "encrypted_session"
         private const val PENDING_VERIFIER_KEY = "encrypted_pending_pkce_verifier"
