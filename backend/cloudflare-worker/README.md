@@ -12,6 +12,8 @@ OAuth client secret, and installation credentials off Android devices.
 - Only usernames listed in `ALLOWED_GITHUB_USERS` receive a Dash Launcher session.
   The initial value is `hesta-lang`; add accounts deliberately.
 - Dash Launcher sessions are HMAC-signed and expire after seven days.
+- The Worker uses the GitHub user OAuth token only to read the signed-in username,
+  then revokes that individual token before issuing a Dash Launcher session.
 - The Worker generates GitHub App installation tokens on the server, scoped to
   this one repository and `Contents: read`.
 - The Android client never receives a GitHub App token, GitHub user token, PAT,
@@ -69,8 +71,12 @@ The deploy workflow only needs Cloudflare deployment credentials.
 
 ### 3. Deploy the Worker
 
-Open **Actions → Deploy Dash Launcher private-storage backend → Run workflow**.
-The workflow publishes the Worker from `backend/cloudflare-worker/`.
+The deploy workflow is added on the development branch. Merge the pull request
+ to the repository's default branch before using the Actions UI; GitHub only
+ displays the manual **Run workflow** control once the `workflow_dispatch` file
+ exists on the default branch. Then open **Actions → Deploy Dash Launcher
+ private-storage backend → Run workflow**. The workflow publishes the Worker from
+ `backend/cloudflare-worker/`.
 
 After the first deployment, copy the Worker URL. It will look like:
 
