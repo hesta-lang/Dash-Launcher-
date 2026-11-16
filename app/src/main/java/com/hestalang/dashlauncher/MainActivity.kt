@@ -2,10 +2,9 @@ package com.hestalang.dashlauncher
 
 import android.content.Context
 import android.content.Intent
+import android.app.DownloadManager
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import android.os.Bundle
@@ -78,11 +77,11 @@ import com.hestalang.dashlauncher.storage.GameProfileManager
 import com.hestalang.dashlauncher.security.GitHubAccessTokenStore
 import com.hestalang.dashlauncher.private_storage.GitHubPrivateStorageRepository
 import com.hestalang.dashlauncher.private_storage.PrivateVersionInfo
+import com.hestalang.dashlauncher.private_storage.PrivateApkDownloadManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
-import java.io.FileInputStream
 
 private fun formatDownloadMegabytes(bytes: Long): Long =
     bytes.coerceAtLeast(0L) / (1024L * 1024L)
@@ -563,17 +562,18 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     val context = LocalContext.current
     val tokenStore = remember(context) { GitHubAccessTokenStore(context) }
     val repository = remember(context) { GitHubPrivateStorageRepository(context) }
-    val storageManager = remember(context) { VersionStorageManager(context) }
+    val downloadManager = remember(context) { PrivateApkDownloadManager(context) }
+    val downloadScope = androidx.compose.runtime.rememberCoroutineScope()
 
     var token by remember { mutableStateOf<String?>(null) }
     var versions by remember { mutableStateOf<List<PrivateVersionInfo>>(emptyList()) }
     var isRefreshing by remember { mutableStateOf(false) }
     var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
     var downloading by remember { mutableStateOf<PrivateVersionInfo?>(null) }
+    var activeDownloadId by remember { mutableStateOf<Long?>(null) }
     var downloadedBytes by remember { mutableStateOf(0L) }
     var downloadTotalBytes by remember { mutableStateOf(0L) }
     var isVerifyingDownload by remember { mutableStateOf(false) }
-    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -601,50 +601,50 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
         isRefreshing = false
     }
 
-    LaunchedEffect(downloading, token) {
-        val selected = downloading ?: return@LaunchedEffect
-        val accessToken = token ?: return@LaunchedEffect
-        downloadedBytes = 0L
-        downloadTotalBytes = selected.sizeBytes
-        isVerifyingDownload = false
-        statusMessage = "Descargando ${selected.displayName}…"
-        runCatching {
-            withContext(Dispatchers.IO) {
-                val temporary = repository.downloadAndVerify(
-                    token = accessToken,
-                    version = selected,
-                    onProgress = { downloaded, total ->
-                        mainHandler.post {
-                            downloadedBytes = downloaded
-                            downloadTotalBytes = total
-                        }
-                    },
-                    onVerifying = {
-                        mainHandler.post { isVerifyingDownload = true }
+    LaunchedEffect(Unit) {
+        val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
+        if (active != null) {
+            downloading = active.version
+            activeDownloadId = active.id
+            statusMessage = "Descarga en curso: ${active.version.displayName}."
+        } else {
+            statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
+        }
+    }
+
+    LaunchedEffect(activeDownloadId) {
+        val id = activeDownloadId ?: return@LaunchedEffect
+        while (true) {
+            val snapshot = withContext(Dispatchers.IO) { downloadManager.query(id) }
+            if (snapshot == null) {
+                val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
+                if (active?.id != id) {
+                    statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
+                    if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
+                    downloading = null
+                    activeDownloadId = null
+                    isVerifyingDownload = false
+                    break
+                }
+            } else {
+                downloadedBytes = snapshot.downloadedBytes.coerceAtLeast(0L)
+                downloadTotalBytes = if (snapshot.totalBytes > 0L) snapshot.totalBytes else downloading?.sizeBytes ?: 0L
+                when (snapshot.status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        isVerifyingDownload = true
+                        statusMessage = "Descarga completa. Verificando SHA-256, firma y compatibilidad…"
                     }
-                )
-                try {
-                    storageManager.storeVerifiedApk(
-                        version = selected.version,
-                        displayName = selected.displayName,
-                        input = FileInputStream(temporary),
-                        expectedSizeBytes = selected.sizeBytes,
-                        expectedSha256 = selected.sha256,
-                        packageName = selected.packageName,
-                        signingCertificateSha256 = selected.signingCertificateSha256
-                    )
-                } finally {
-                    temporary.delete()
+                    DownloadManager.STATUS_FAILED -> {
+                        isVerifyingDownload = true
+                        statusMessage = "Descarga terminada con error. Comprobando el resultado…"
+                    }
+                    DownloadManager.STATUS_PAUSED -> statusMessage = "Descarga pausada por Android; se reanudará cuando sea posible."
+                    DownloadManager.STATUS_PENDING,
+                    DownloadManager.STATUS_RUNNING -> statusMessage = "Descargando en segundo plano…"
                 }
             }
-        }.onSuccess { stored ->
-            statusMessage = "APK verificado y guardado en ${stored.apkFile.absolutePath}."
-            onApkStored()
-        }.onFailure {
-            statusMessage = it.message ?: "No se pudo descargar la versión privada."
+            delay(700)
         }
-        downloading = null
-        isVerifyingDownload = false
     }
 
     Card(
@@ -714,12 +714,31 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                             Text(item.warning, style = MaterialTheme.typography.bodySmall)
                             Button(
                                 onClick = {
-                                    downloadedBytes = 0L
-                                    downloadTotalBytes = item.sizeBytes
-                                    isVerifyingDownload = false
-                                    downloading = item
+                                    val accessToken = token
+                                    if (accessToken == null) {
+                                        statusMessage = "Conecta el almacenamiento privado antes de descargar."
+                                    } else {
+                                        downloading = item
+                                        downloadedBytes = 0L
+                                        downloadTotalBytes = item.sizeBytes
+                                        isVerifyingDownload = false
+                                        statusMessage = "Preparando descarga segura…"
+                                        downloadScope.launch {
+                                            runCatching {
+                                                withContext(Dispatchers.IO) {
+                                                    downloadManager.enqueue(accessToken, item)
+                                                }
+                                            }.onSuccess { id ->
+                                                activeDownloadId = id
+                                                statusMessage = "Descarga iniciada por Android. Puedes salir de Dash Launcher."
+                                            }.onFailure { error ->
+                                                downloading = null
+                                                statusMessage = error.message ?: "No se pudo iniciar la descarga."
+                                            }
+                                        }
+                                    }
                                 },
-                                enabled = downloading == null &&
+                                enabled = activeDownloadId == null && downloading == null &&
                                     Build.VERSION.SDK_INT >= item.minAndroidApi &&
                                     item.supportedAbis.any { Build.SUPPORTED_ABIS.contains(it) },
                                 modifier = Modifier.fillMaxWidth()
