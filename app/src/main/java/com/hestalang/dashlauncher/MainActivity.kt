@@ -1,7 +1,10 @@
 package com.hestalang.dashlauncher
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -56,6 +59,7 @@ import com.hestalang.dashlauncher.data.RemoteVersionCatalogRepository
 import com.hestalang.dashlauncher.data.VersionEntry
 import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
 import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
+import com.hestalang.dashlauncher.download.ExternalCatalogPageProvider
 import com.hestalang.dashlauncher.download.DownloadProviderRegistry
 import com.hestalang.dashlauncher.download.DownloadResolution
 import com.hestalang.dashlauncher.download.DownloadStatus
@@ -505,7 +509,7 @@ private fun CatalogVersionCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "Android API " + record.minAndroidApi + " o superior",
+                        "Dash Launcher requiere Android API 26 o superior",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -579,15 +583,20 @@ private fun CatalogVersionCard(
                             )
                         }
                         Text(
-                            "ABI: " + details.supportedAbis.joinToString(", "),
+                            if (details.supportedAbis.isEmpty()) {
+                                "ABI: todavía no verificada; consulta la ficha del proveedor"
+                            } else {
+                                "ABI: " + details.supportedAbis.joinToString(", ")
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
                         val apiCompatible = Build.VERSION.SDK_INT >= details.minAndroidApi
-                        val abiCompatible = details.supportedAbis.any { supported ->
-                            Build.SUPPORTED_ABIS.contains(supported)
-                        }
+                        val abiCompatible = details.supportedAbis.isEmpty() ||
+                            details.supportedAbis.any { supported ->
+                                Build.SUPPORTED_ABIS.contains(supported)
+                            }
                         val entry = VersionEntry(
                             id = record.id,
                             displayName = record.displayName,
@@ -599,7 +608,8 @@ private fun CatalogVersionCard(
                             downloadUrl = details.artifact?.url,
                             sizeBytes = details.artifact?.sizeBytes,
                             sha256 = details.artifact?.sha256,
-                            providerId = details.artifact?.providerId ?: "direct"
+                            providerId = details.artifact?.providerId ?: "direct",
+                            providerName = details.artifact?.providerName
                         )
                         val resolution = when {
                             !apiCompatible -> DownloadResolution.Unavailable(
@@ -610,7 +620,10 @@ private fun CatalogVersionCard(
                             )
                             else -> remember(entry) {
                                 DownloadProviderRegistry(
-                                    listOf(CatalogDirectDownloadProvider())
+                                    listOf(
+                                        CatalogDirectDownloadProvider(),
+                                        ExternalCatalogPageProvider()
+                                    )
                                 ).resolve(entry)
                             }
                         }
@@ -709,6 +722,32 @@ private fun SettingsScreen(
 @Composable
 private fun VersionDownloadAction(resolution: DownloadResolution) {
     val context = LocalContext.current
+
+    if (resolution is DownloadResolution.OpenExternalPage) {
+        Button(
+            onClick = {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(resolution.url))
+                runCatching { context.startActivity(intent) }
+                    .onFailure {
+                        Toast.makeText(
+                            context,
+                            "No se pudo abrir la página de " + resolution.providerName,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Abrir " + resolution.providerName)
+        }
+        Text(
+            "Dash Launcher abrirá la ficha externa. La descarga y la comprobación del archivo se realizan fuera de la aplicación.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
     val coordinator = remember(context) { ApkDownloadCoordinator(context) }
     val artifact = (resolution as? DownloadResolution.Available)?.artifact
 
