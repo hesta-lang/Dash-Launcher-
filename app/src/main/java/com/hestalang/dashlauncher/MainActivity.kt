@@ -1082,7 +1082,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                         profileManager.importGameDataBackup(selectedVersion, targetId, input)
                     }
                 }.onSuccess {
-                    statusMessage = "Archivo ZIP guardado en el perfil. No se ha aplicado al progreso activo del juego."
+                    statusMessage = "Archivo ZIP guardado en la instancia. No se ha aplicado al progreso activo del juego."
                     refreshCounter++
                 }.onFailure {
                     statusMessage = it.message ?: "No se pudo importar el archivo ZIP."
@@ -1145,7 +1145,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                 activeProfileId = null
             }
         }.onFailure {
-            statusMessage = it.message ?: "No se pudieron cargar los perfiles."
+            statusMessage = it.message ?: "No se pudieron cargar las instancias."
         }
     }
 
@@ -1173,7 +1173,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                 Text("Versión seleccionada", fontWeight = FontWeight.SemiBold)
                 if (localVersions.isEmpty()) {
                     Text(
-                        "Primero descarga y guarda un APK desde la sección Versiones para preparar su espacio de perfiles.",
+                        "Primero descarga y guarda un APK desde la sección Versiones para preparar su biblioteca de instancias.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1232,7 +1232,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                     statusMessage = "Instancia creada."
                                     refreshCounter++
                                 }.onFailure {
-                                    statusMessage = it.message ?: "No se pudo crear el perfil."
+                                    statusMessage = it.message ?: "No se pudo crear la instancia."
                                 }
                                 isBusy = false
                             }
@@ -1272,7 +1272,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                             activeProfileId = profile.id
                                             statusMessage = "Instancia seleccionada en Dash Launcher."
                                         }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo seleccionar el perfil."
+                                            statusMessage = it.message ?: "No se pudo seleccionar la instancia."
                                         }
                                         isBusy = false
                                     }
