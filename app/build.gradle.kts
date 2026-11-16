@@ -58,6 +58,8 @@ baselineProfile {
 dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     testImplementation("junit:junit:4.13.2")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
