@@ -35,11 +35,23 @@ class PrivateApkDownloadManager(context: Context) {
             .setAllowedOverRoaming(false)
             .setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, filename)
         val id = downloadManager.enqueue(request)
-        check(preferences.edit()
+        val persisted = preferences.edit()
             .putString(VERSION_KEY_PREFIX + id, gson.toJson(version))
             .putLong(ACTIVE_ID_KEY, id)
             .putString(RESULT_KEY, "Descarga iniciada en el gestor de Android.")
-            .commit()) { "No se pudo guardar el estado de la descarga." }
+            .commit()
+        if (!persisted) {
+            downloadManager.remove(id)
+            throw IllegalStateException("No se pudo guardar el estado de la descarga.")
+        }
+        // Covers the rare race where DownloadManager finishes before the completion receiver
+        // can find the metadata saved above.
+        val initialSnapshot = query(id)
+        if (initialSnapshot?.status == DownloadManager.STATUS_SUCCESSFUL ||
+            initialSnapshot?.status == DownloadManager.STATUS_FAILED
+        ) {
+            scheduleVerification(id)
+        }
         return id
     }
 
@@ -77,7 +89,9 @@ class PrivateApkDownloadManager(context: Context) {
             androidx.work.ExistingWorkPolicy.KEEP,
             request
         )
-        setVerificationStage(id, "Esperando al verificador de APK…")
+        if (verificationStage(id) == null) {
+            setVerificationStage(id, "Esperando al verificador de APK…")
+        }
     }
 
     fun setVerificationStage(id: Long, stage: String) {
