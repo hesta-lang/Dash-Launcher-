@@ -23,8 +23,8 @@ class PrivateApkDownloadManager(context: Context) {
     private val gson = Gson()
     private val repository = GitHubPrivateStorageRepository(appContext)
 
-    fun enqueue(token: String, version: PrivateVersionInfo): Long {
-        val signedUrl = repository.resolveDownloadUrl(token, version)
+    fun enqueue(session: String, version: PrivateVersionInfo): Long {
+        val signedUrl = repository.resolveDownloadUrl(session, version)
         val filename = "dash-${version.id}-${System.currentTimeMillis()}.apk"
         val request = DownloadManager.Request(Uri.parse(signedUrl))
             .setTitle(version.displayName)
