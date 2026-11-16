@@ -7,6 +7,7 @@ import com.hestalang.dashlauncher.storage.VersionStorageManager
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
+import java.util.zip.ZipFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -35,9 +36,13 @@ class ProfileApkClonerInstrumentedTest {
         assertTrue("El APK original fixture no está instalado o no se puede leer.", sourceApk.isFile && sourceApk.canRead())
         val originalSourceHash = sha256(sourceApk)
 
-        // Keep the validation APK in internal app storage so CI can retrieve it
-        // reliably with adb run-as, independent of external-storage mount behavior.
-        val workDirectory = File(context.filesDir, VALIDATION_DIRECTORY)
+        // Keep the validation APK in this app's external files directory.
+        // CI can retrieve this app-specific file with adb pull without streaming
+        // binary APK data through run-as/stdout.
+        val externalFilesDirectory = requireNotNull(context.getExternalFilesDir(null)) {
+            "El almacenamiento externo específico de la app no está disponible."
+        }
+        val workDirectory = File(externalFilesDirectory, VALIDATION_DIRECTORY)
         assertTrue(
             "No se pudo preparar la carpeta de validación.",
             workDirectory.isDirectory || workDirectory.mkdirs()
@@ -67,6 +72,12 @@ class ProfileApkClonerInstrumentedTest {
         assertEquals(GeometryDashInstallManager.GAME_PACKAGE, cloneResult.sourcePackageName)
         assertEquals(profilePackageName, cloneResult.installedPackageName)
         assertTrue("No se generó el APK de la instancia.", outputApk.isFile && outputApk.length() > 0L)
+        ZipFile(outputApk).use { archive ->
+            assertNotNull("El APK clonado no contiene AndroidManifest.xml.", archive.getEntry("AndroidManifest.xml"))
+            assertNotNull("El APK clonado no contiene classes.dex.", archive.getEntry("classes.dex"))
+        }
+        println("PROFILE_CLONE_APK_SIZE=${outputApk.length()}")
+        println("PROFILE_CLONE_APK_SHA256=${sha256(outputApk)}")
 
         @Suppress("DEPRECATION")
         val archiveInfo = packageManager.getPackageArchiveInfo(

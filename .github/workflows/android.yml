@@ -81,10 +81,17 @@ jobs:
             adb logcat -c
             gradle :app:connectedDebugAndroidTest
 
-            # Retrieve the clone from app-private test storage through run-as.
-            # The test APK is debuggable, so this avoids scoped-storage path differences.
-            adb exec-out run-as com.hestalang.dashlauncher cat files/profile-clone-validation/instance.apk > profile-instance-validation.apk
+            # Retrieve the clone from app-specific external storage with adb pull.
+            # This avoids copying binary APK bytes through run-as/stdout.
+            adb pull /sdcard/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
             test -s profile-instance-validation.apk
+            {
+              echo "Exported profile APK:"
+              stat -c 'size=%s bytes' profile-instance-validation.apk
+              sha256sum profile-instance-validation.apk
+            } > profile-apk-export-diagnostics.txt
+            unzip -t profile-instance-validation.apk >> profile-apk-export-diagnostics.txt 2>&1
+            cat profile-apk-export-diagnostics.txt
             adb install -r profile-instance-validation.apk
 
             adb shell pm path com.robtopx.geometryjump > original-package-path.txt
@@ -132,6 +139,8 @@ jobs:
           path: |
             profile-install-validation.txt
             profile-install-validation-logcat.txt
+            profile-instance-validation.apk
+            profile-apk-export-diagnostics.txt
             app/build/outputs/androidTest-results/connected/debug
             app/build/reports/androidTests/connected/debug
           if-no-files-found: warn
