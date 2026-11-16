@@ -23,6 +23,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
         val snapshot = queryStatus(downloadManager, id)
             ?: return fail(preferences, id, "Android ya no encuentra esta descarga.")
         if (snapshot.first != DownloadManager.STATUS_SUCCESSFUL) {
+            downloadManager.remove(id)
             return fail(preferences, id, "Android no pudo completar la descarga (código ${snapshot.second}).")
         }
 
