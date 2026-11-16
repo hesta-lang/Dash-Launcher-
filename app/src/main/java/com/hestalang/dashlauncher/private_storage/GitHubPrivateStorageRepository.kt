@@ -1,209 +1,97 @@
 package com.hestalang.dashlauncher.private_storage
 
-import com.hestalang.dashlauncher.security.ApkSignerCertificateReader
-
 import android.content.Context
 import android.os.Build
 import android.util.Base64
 import com.google.gson.JsonParser
+import com.hestalang.dashlauncher.security.ApkSignerCertificateReader
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.zip.ZipFile
 
 /**
- * Read-only client for the owner's private GitHub repository.
+ * Android client for the Dash Launcher backend.
  *
- * Fine-grained token permissions required:
- * - Repository access: only Dash-Launcher-Private-Storage
- * - Contents: Read-only
- *
- * The token is only sent to api.github.com. Signed release-asset redirects are followed
- * without forwarding the token to the redirected host.
+ * GitHub App credentials, installation tokens, and GitHub OAuth tokens remain on
+ * the server. This class sends only a short-lived Dash Launcher session to the
+ * configured backend. APK verification remains local and independent.
  */
 class GitHubPrivateStorageRepository(context: Context) {
     private val appContext = context.applicationContext
-    private val cacheDirectory = File(appContext.cacheDir, "private-storage")
+    private val backendBaseUrl = DashBackendConfiguration.BASE_URL.trimEnd('/')
 
-    fun validateAccess(token: String) {
-        validateTokenFormat(token)
-        val response = requestApi(
-            url = "$API_BASE/repos/$REPOSITORY",
-            token = token,
-            accept = "application/vnd.github+json"
-        )
-        val repository = JsonParser.parseString(response).asJsonObject
-        require(repository.get("full_name")?.asString == REPOSITORY) {
-            "El token no tiene acceso al repositorio privado configurado."
+    fun createLoginUrl(codeChallenge: String): String {
+        require(codeChallenge.matches(Regex("^[A-Za-z0-9_-]{43}$"))) {
+            "El desafío PKCE no es válido."
         }
-        require(repository.get("private")?.asBoolean == true) {
-            "El repositorio de almacenamiento debe permanecer privado."
-        }
+        requireBackendConfigured()
+        return backendBaseUrl + "/auth/login?code_challenge=" +
+            URLEncoder.encode(codeChallenge, Charsets.UTF_8.name())
     }
 
-    fun loadVersions(token: String): List<PrivateVersionInfo> {
-        validateTokenFormat(token)
-        val response = requestApi(
-            url = "$API_BASE/repos/$REPOSITORY/contents/$CATALOG_PATH?ref=main",
-            token = token,
-            accept = "application/vnd.github+json"
+    /** Exchanges the one-time browser callback code for a scoped launcher session. */
+    fun exchangeLoginCode(code: String, codeVerifier: String): String {
+        require(code.matches(Regex("^[A-Za-z0-9_-]{32,100}$"))) {
+            "El código de inicio de sesión no es válido."
+        }
+        require(codeVerifier.matches(Regex("^[A-Za-z0-9._~-]{43,128}$"))) {
+            "El verificador PKCE no es válido."
+        }
+        val body = com.google.gson.JsonObject().apply {
+            addProperty("code", code)
+            addProperty("codeVerifier", codeVerifier)
+        }
+        val response = request(
+            path = "/auth/exchange",
+            session = null,
+            method = "POST",
+            body = body.toString()
         )
-        val contentObject = JsonParser.parseString(response).asJsonObject
-        require(contentObject.get("type")?.asString == "file") {
-            "El manifiesto privado no es un archivo."
+        val json = JsonParser.parseString(response).asJsonObject
+        val session = json.get("accessToken")?.takeIf { it.isJsonPrimitive }?.asString
+            ?: throw IOException("El backend no devolvió una sesión de Dash Launcher.")
+        require(session.length in 60..2048 && session.contains(".")) {
+            "El backend devolvió una sesión de Dash Launcher no válida."
         }
-        require(contentObject.get("encoding")?.asString == "base64") {
-            "GitHub devolvió un formato de manifiesto no compatible."
-        }
-        val encoded = contentObject.get("content")?.asString
-            ?: throw IOException("GitHub no devolvió el contenido del manifiesto privado.")
-        val decoded = Base64.decode(encoded, Base64.DEFAULT)
-        require(decoded.size <= MAX_CATALOG_BYTES) {
-            "El manifiesto privado supera el tamaño máximo permitido."
-        }
-        return PrivateVersionCatalogParser.parse(String(decoded, Charsets.UTF_8))
+        return session
     }
 
-    /**
-     * Resolves a named asset from the expected private Release, downloads it to cache,
-     * and validates size, SHA-256, package, signing certificate, ABI and device support.
-     * The returned temporary file must be deleted by the caller after it is stored.
-     */
-    fun downloadAndVerify(
-        token: String,
-        version: PrivateVersionInfo,
-        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
-        onVerifying: () -> Unit = {}
-    ): File {
-        validateTokenFormat(token)
-        val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name())
-        val releaseJson = requestApi(
-            url = "$API_BASE/repos/$REPOSITORY/releases/tags/$encodedTag",
-            token = token,
-            accept = "application/vnd.github+json"
-        )
-        val release = JsonParser.parseString(releaseJson).asJsonObject
-        require(release.get("tag_name")?.asString == version.tag) {
-            "La Release privada no coincide con la etiqueta declarada."
-        }
-        require(release.get("draft")?.asBoolean == false) {
-            "La Release privada todavía está marcada como borrador."
-        }
-
-        val assets = release.getAsJsonArray("assets")
-            ?: throw IOException("La Release privada no contiene archivos.")
-        val matchingAsset = assets.firstOrNull { item ->
-            item.isJsonObject && item.asJsonObject.get("name")?.asString == version.assetName
-        }?.asJsonObject ?: throw IOException("No se encontró el APK esperado en la Release privada.")
-
-        val assetId = matchingAsset.get("id")?.asLong
-            ?: throw IOException("GitHub no devolvió el ID del asset.")
-        val assetSize = matchingAsset.get("size")?.asLong
-            ?: throw IOException("GitHub no devolvió el tamaño del asset.")
-        require(assetSize == version.sizeBytes) {
-            "El tamaño del asset de GitHub no coincide con el manifiesto privado."
-        }
-
-        val remoteDigest = matchingAsset.get("digest")
-            ?.takeIf { !it.isJsonNull }
-            ?.asString
-            ?.removePrefix("sha256:")
-        if (!remoteDigest.isNullOrBlank()) {
-            require(remoteDigest.equals(version.sha256, ignoreCase = true)) {
-                "El digest publicado por GitHub no coincide con el manifiesto privado."
-            }
-        }
-
-        cacheDirectory.mkdirs()
-        val temporaryFile = File.createTempFile("dash-private-", ".apk.part", cacheDirectory)
-        try {
-            downloadAssetWithRetry(
-                token = token,
-                assetId = assetId,
-                version = version,
-                destination = temporaryFile,
-                onProgress = onProgress
-            )
-            onVerifying()
-            verifyApk(temporaryFile, version)
-            return temporaryFile
-        } catch (error: Exception) {
-            temporaryFile.delete()
-            throw error
-        }
+    fun loadVersions(session: String): List<PrivateVersionInfo> {
+        validateSessionFormat(session)
+        val response = request("/api/catalog", session)
+        return PrivateVersionCatalogParser.parse(response)
     }
 
-    /**
-     * Resolves a private Release asset into a short-lived, signed HTTPS URL.
-     * The GitHub token is used only for api.github.com and is never passed to DownloadManager.
-     */
-    fun resolveDownloadUrl(token: String, version: PrivateVersionInfo): String {
-        validateTokenFormat(token)
-        val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name())
-        val releaseJson = requestApi(
-            url = "$API_BASE/repos/$REPOSITORY/releases/tags/$encodedTag",
-            token = token,
-            accept = "application/vnd.github+json"
+    fun resolveDownloadUrl(session: String, version: PrivateVersionInfo): String {
+        validateSessionFormat(session)
+        val encodedId = URLEncoder.encode(version.id, Charsets.UTF_8.name())
+        val response = request("/api/download-url?id=" + encodedId, session)
+        val json = JsonParser.parseString(response).asJsonObject
+        val location = json.get("url")?.takeIf { it.isJsonPrimitive }?.asString
+            ?: throw IOException("El backend no devolvió la URL temporal del APK.")
+        val uri = URI(location)
+        val allowedHosts = setOf(
+            "release-assets.githubusercontent.com",
+            "objects.githubusercontent.com"
         )
-        val release = JsonParser.parseString(releaseJson).asJsonObject
-        require(release.get("tag_name")?.asString == version.tag) {
-            "La Release privada no coincide con la etiqueta declarada."
+        require(uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host?.lowercase() in allowedHosts &&
+            uri.userInfo == null) {
+            "El backend devolvió una URL temporal de descarga no permitida."
         }
-        require(release.get("draft")?.asBoolean == false) {
-            "La Release privada todavía está marcada como borrador."
+        require(json.get("versionId")?.asString == version.id) {
+            "La URL temporal corresponde a otra versión del catálogo."
         }
-        val assets = release.getAsJsonArray("assets")
-            ?: throw IOException("La Release privada no contiene archivos.")
-        val asset = assets.firstOrNull { item ->
-            item.isJsonObject && item.asJsonObject.get("name")?.asString == version.assetName
-        }?.asJsonObject ?: throw IOException("No se encontró el APK esperado en la Release privada.")
-        val assetId = asset.get("id")?.asLong
-            ?: throw IOException("GitHub no devolvió el ID del asset.")
-        require(asset.get("size")?.asLong == version.sizeBytes) {
-            "El tamaño del asset de GitHub no coincide con el manifiesto privado."
-        }
-        val remoteDigest = asset.get("digest")
-            ?.takeIf { !it.isJsonNull }?.asString?.removePrefix("sha256:")
-        if (!remoteDigest.isNullOrBlank()) {
-            require(remoteDigest.equals(version.sha256, ignoreCase = true)) {
-                "El digest publicado por GitHub no coincide con el manifiesto privado."
-            }
-        }
-
-        val connection = openApiConnection(
-            url = "$API_BASE/repos/$REPOSITORY/releases/assets/$assetId",
-            token = token,
-            accept = "application/octet-stream"
-        )
-        try {
-            val code = connection.responseCode
-            require(code == HttpURLConnection.HTTP_MOVED_TEMP ||
-                code == HttpURLConnection.HTTP_MOVED_PERM ||
-                code == HttpURLConnection.HTTP_SEE_OTHER ||
-                code == 307 || code == 308) {
-                if (code in 200..299) "GitHub no proporcionó una URL temporal de descarga."
-                else httpErrorMessage(code)
-            }
-            val location = connection.getHeaderField("Location")
-                ?: throw IOException("GitHub no proporcionó la URL temporal del APK.")
-            val uri = URI(location)
-            val allowedHosts = setOf("release-assets.githubusercontent.com", "objects.githubusercontent.com")
-            require(uri.scheme.equals("https", ignoreCase = true) &&
-                uri.host?.lowercase() in allowedHosts && uri.userInfo == null) {
-                "GitHub redirigió el APK a un dominio temporal no permitido."
-            }
-            return location
-        } finally {
-            connection.disconnect()
-        }
+        return location
     }
 
-    /** Validates a DownloadManager file before it can be copied into versions/. */
+    /** Verifies a DownloadManager file before it can be stored or installed. */
     fun verifyDownloadedApk(file: File, version: PrivateVersionInfo) {
         require(file.isFile && file.length() == version.sizeBytes) {
             "El tamaño del APK descargado no coincide con el catálogo privado."
@@ -223,121 +111,77 @@ class GitHubPrivateStorageRepository(context: Context) {
         verifyApk(file, version)
     }
 
-    /**
-     * Downloads the asset from the beginning on each retry. A fresh signed redirect URL
-     * is requested every time; partial bytes are discarded and never appended to a new
-     * response. SHA-256 and exact length are checked before returning.
-     */
-    private fun downloadAssetWithRetry(
-        token: String,
-        assetId: Long,
-        version: PrivateVersionInfo,
-        destination: File,
-        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit
-    ) {
-        var lastNetworkError: IOException? = null
-
-        repeat(ASSET_RETRY_ATTEMPTS) { attempt ->
-            var apiConnection: HttpURLConnection? = null
-            var assetConnection: HttpURLConnection? = null
-            try {
-                val apiUrl = "$API_BASE/repos/$REPOSITORY/releases/assets/$assetId"
-                apiConnection = openApiConnection(
-                    url = apiUrl,
-                    token = token,
-                    accept = "application/octet-stream"
-                )
-
-                val responseCode = apiConnection.responseCode
-                assetConnection = when (responseCode) {
-                    HttpURLConnection.HTTP_OK -> apiConnection
-                    HttpURLConnection.HTTP_MOVED_TEMP,
-                    HttpURLConnection.HTTP_MOVED_PERM,
-                    HttpURLConnection.HTTP_SEE_OTHER,
-                    307,
-                    308 -> {
-                        val location = apiConnection.getHeaderField("Location")
-                            ?: throw IOException("GitHub no proporcionó la URL temporal del APK.")
-                        apiConnection.disconnect()
-                        apiConnection = null
-                        openSignedAssetConnection(location)
-                    }
-                    in 500..599 -> throw java.net.SocketException(
-                        "GitHub respondió HTTP $responseCode al iniciar la descarga del APK."
-                    )
-                    else -> throw GitHubHttpException(httpErrorMessage(responseCode))
-                }
-
-                val digest = MessageDigest.getInstance("SHA-256")
-                var copiedBytes = 0L
-                onProgress(0L, version.sizeBytes)
-                assetConnection!!.inputStream.use { source ->
-                    FileOutputStream(destination, false).use { target ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val count = source.read(buffer)
-                            if (count < 0) break
-                            if (count == 0) continue
-                            copiedBytes += count
-                            if (copiedBytes > version.sizeBytes) {
-                                throw IOException("La descarga supera el tamaño permitido.")
-                            }
-                            digest.update(buffer, 0, count)
-                            target.write(buffer, 0, count)
-                            onProgress(copiedBytes, version.sizeBytes)
-                        }
-                        target.fd.sync()
-                    }
-                }
-
-                if (copiedBytes != version.sizeBytes) {
-                    throw IncompleteAssetException(
-                        "La conexión terminó antes de recibir el APK completo."
-                    )
-                }
-
-                val actualHash = digest.digest().toHexString()
-                require(actualHash.equals(version.sha256, ignoreCase = true)) {
-                    "El SHA-256 del APK no coincide con el manifiesto privado."
-                }
-                return
-            } catch (error: IncompleteAssetException) {
-                lastNetworkError = error
-                if (attempt == ASSET_RETRY_ATTEMPTS - 1) {
-                    throw IOException(
-                        "La descarga del APK se interrumpió incluso después de varios intentos.",
-                        error
-                    )
-                }
-            } catch (error: GitHubHttpException) {
-                throw IOException(error.message, error)
-            } catch (error: IOException) {
-                if (!isTransientNetworkFailure(error) || attempt == ASSET_RETRY_ATTEMPTS - 1) {
-                    throw IOException(
-                        "No se pudo completar la descarga segura del APK. " +
-                            "La conexión se interrumpió; se agotaron los intentos disponibles.",
-                        error
-                    )
-                }
-                lastNetworkError = error
-            } finally {
-                assetConnection?.disconnect()
-                if (apiConnection !== assetConnection) apiConnection?.disconnect()
-            }
-
-            onProgress(0L, version.sizeBytes)
-            try {
-                Thread.sleep(ASSET_RETRY_DELAY_MS * (attempt + 1))
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw IOException("Se canceló la descarga del APK.", interrupted)
+    private fun request(
+        path: String,
+        session: String?,
+        method: String = "GET",
+        body: String? = null
+    ): String {
+        requireBackendConfigured()
+        require(path.startsWith("/") && !path.startsWith("//")) {
+            "La ruta del backend no es válida."
+        }
+        val connection = (URL(backendBaseUrl + path).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = false
+            useCaches = false
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "DashLauncher-Android")
+            setRequestProperty("Connection", "close")
+            setRequestProperty("Cache-Control", "no-cache")
+            if (!session.isNullOrBlank()) setRequestProperty("Authorization", "Bearer " + session)
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
             }
         }
-
-        throw IOException("GitHub interrumpió la descarga después de varios intentos.", lastNetworkError)
+        try {
+            if (body != null) {
+                connection.outputStream.use { output ->
+                    output.write(body.toByteArray(Charsets.UTF_8))
+                    output.flush()
+                }
+            }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val response = stream?.use { readLimited(it, MAX_RESPONSE_BYTES) }.orEmpty()
+            if (code !in 200..299) {
+                val message = runCatching {
+                    JsonParser.parseString(response).asJsonObject
+                        .get("error")?.asString
+                }.getOrNull()
+                throw IOException(message ?: when (code) {
+                    401 -> "La sesión de Dash Launcher caducó. Vuelve a conectar GitHub."
+                    403 -> "Esta cuenta de GitHub no está autorizada para el almacenamiento privado."
+                    404 -> "El recurso no existe en el almacenamiento privado."
+                    429 -> "El servicio limitó temporalmente las solicitudes. Inténtalo más tarde."
+                    else -> "El backend de Dash Launcher respondió HTTP $code."
+                })
+            }
+            return response
+        } finally {
+            connection.disconnect()
+        }
     }
 
-    private class IncompleteAssetException(message: String) : IOException(message)
+    private fun requireBackendConfigured() {
+        val uri = runCatching { URI(backendBaseUrl) }.getOrNull()
+        require(uri != null &&
+            uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host?.endsWith(".workers.dev", ignoreCase = true) == true &&
+            !uri.host.contains("YOUR-SUBDOMAIN", ignoreCase = true) &&
+            uri.userInfo == null) {
+            "El servidor de Dash Launcher todavía no está configurado. Despliega el Worker y establece su URL en DashBackendConfiguration.kt."
+        }
+    }
+
+    private fun validateSessionFormat(session: String) {
+        require(session.length in 60..2048 && session.contains(".")) {
+            "No hay una sesión válida de Dash Launcher. Conecta GitHub desde Configuración."
+        }
+    }
 
     private fun verifyApk(file: File, version: PrivateVersionInfo) {
         val packageInfo = appContext.packageManager.getPackageArchiveInfo(
@@ -355,9 +199,7 @@ class GitHubPrivateStorageRepository(context: Context) {
         )
         require(certificates.isNotEmpty()) { "El APK no contiene un certificado de firma legible." }
         val signerHashes = certificates.map { certificate ->
-            MessageDigest.getInstance("SHA-256")
-                .digest(certificate)
-                .toHexString()
+            MessageDigest.getInstance("SHA-256").digest(certificate).toHexString()
         }
         require(signerHashes.any {
             it.equals(version.signingCertificateSha256, ignoreCase = true)
@@ -387,130 +229,6 @@ class GitHubPrivateStorageRepository(context: Context) {
         }
     }
 
-    private fun requestApi(url: String, token: String, accept: String): String {
-        var lastNetworkError: IOException? = null
-
-        repeat(API_RETRY_ATTEMPTS) { attempt ->
-            var connection: HttpURLConnection? = null
-            try {
-                connection = openApiConnection(url, token, accept)
-                val code = connection.responseCode
-                if (code !in 200..299) throw GitHubHttpException(httpErrorMessage(code))
-                return connection.inputStream.use { readLimited(it, MAX_CATALOG_BYTES) }
-            } catch (error: GitHubHttpException) {
-                throw IOException(error.message, error)
-            } catch (error: IOException) {
-                if (!isTransientNetworkFailure(error) || attempt == API_RETRY_ATTEMPTS - 1) {
-                    throw IOException(
-                        "No se pudo completar la conexión segura con GitHub. " +
-                            "La conexión se interrumpió durante la lectura; comprueba tu red e inténtalo de nuevo.",
-                        error
-                    )
-                }
-                lastNetworkError = error
-                try {
-                    Thread.sleep(API_RETRY_DELAY_MS * (attempt + 1))
-                } catch (interrupted: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw IOException("Se canceló la consulta del almacenamiento privado.", interrupted)
-                }
-            } finally {
-                connection?.disconnect()
-            }
-        }
-
-        throw IOException(
-            "GitHub interrumpió la conexión después de varios intentos.",
-            lastNetworkError
-        )
-    }
-
-    private fun isTransientNetworkFailure(error: IOException): Boolean {
-        var current: Throwable? = error
-        while (current != null) {
-            val message = current.message.orEmpty().lowercase()
-            if (current is java.net.SocketException ||
-                current is java.net.SocketTimeoutException ||
-                current is javax.net.ssl.SSLException ||
-                message.contains("ssl=") ||
-                message.contains("connection abort") ||
-                message.contains("connection reset") ||
-                message.contains("unexpected end of stream")
-            ) return true
-            current = current.cause
-        }
-        return false
-    }
-
-    private class GitHubHttpException(message: String) : IOException(message)
-
-    private fun openApiConnection(
-        url: String,
-        token: String,
-        accept: String
-    ): HttpURLConnection {
-        val uri = URI(url)
-        require(uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host.equals("api.github.com", ignoreCase = true) &&
-            uri.userInfo == null) {
-            "La solicitud de almacenamiento privado no apunta a la API HTTPS de GitHub."
-        }
-        return (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            instanceFollowRedirects = false
-            useCaches = false
-            setRequestProperty("Authorization", "Bearer $token")
-            setRequestProperty("Accept", accept)
-            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-            setRequestProperty("User-Agent", "DashLauncher-Android")
-            setRequestProperty("Connection", "close")
-            setRequestProperty("Cache-Control", "no-cache")
-        }
-    }
-
-    private fun openSignedAssetConnection(location: String): HttpURLConnection {
-        val uri = URI(location)
-        val allowedHosts = setOf(
-            "release-assets.githubusercontent.com",
-            "objects.githubusercontent.com"
-        )
-        require(uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host?.lowercase() in allowedHosts &&
-            uri.userInfo == null) {
-            "GitHub redirigió el APK a un dominio temporal no permitido."
-        }
-        val connection = (URL(location).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = ASSET_READ_TIMEOUT_MS
-            instanceFollowRedirects = false
-            useCaches = false
-            setRequestProperty("Accept", "application/octet-stream")
-            setRequestProperty("User-Agent", "DashLauncher-Android")
-            setRequestProperty("Connection", "close")
-            setRequestProperty("Cache-Control", "no-cache")
-        }
-        val code = connection.responseCode
-        if (code !in 200..299) {
-            connection.disconnect()
-            if (code in 500..599) {
-                throw java.net.SocketException(
-                    "El servidor temporal del APK respondió HTTP $code."
-                )
-            }
-            throw IOException("El servidor temporal del APK respondió HTTP $code.")
-        }
-        return connection
-    }
-
-    private fun validateTokenFormat(token: String) {
-        require(token.startsWith(TOKEN_PREFIX) && token.length in 40..300) {
-            "No hay un token fine-grained válido. Configúralo en Ajustes."
-        }
-    }
-
     private fun readLimited(input: java.io.InputStream, maxBytes: Int): String {
         val output = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(8 * 1024)
@@ -519,19 +237,11 @@ class GitHubPrivateStorageRepository(context: Context) {
             if (count < 0) break
             if (count == 0) continue
             if (output.size() + count > maxBytes) {
-                throw IOException("La respuesta de GitHub supera el tamaño máximo permitido.")
+                throw IOException("La respuesta del backend supera el tamaño máximo permitido.")
             }
             output.write(buffer, 0, count)
         }
         return output.toString(Charsets.UTF_8.name())
-    }
-
-    private fun httpErrorMessage(code: Int): String = when (code) {
-        401 -> "GitHub rechazó el token. Comprueba que siga vigente."
-        403 -> "GitHub denegó el acceso. Comprueba que el token tenga Contents: Read-only."
-        404 -> "No se encontró el recurso privado. Comprueba el nombre del repositorio y los permisos del token."
-        429 -> "GitHub limitó temporalmente las solicitudes. Inténtalo más tarde."
-        else -> "GitHub respondió HTTP $code al consultar el almacenamiento privado."
     }
 
     private fun ByteArray.toHexString(): String =
@@ -539,16 +249,29 @@ class GitHubPrivateStorageRepository(context: Context) {
 
     companion object {
         const val REPOSITORY = "hesta-lang/Dash-Launcher-Private-Storage"
-        private const val API_BASE = "https://api.github.com"
-        private const val CATALOG_PATH = "catalog/versions.json"
-        private const val TOKEN_PREFIX = "github_pat_"
         private const val CONNECT_TIMEOUT_MS = 30_000
         private const val READ_TIMEOUT_MS = 45_000
-        private const val API_RETRY_ATTEMPTS = 3
-        private const val API_RETRY_DELAY_MS = 500L
-        private const val ASSET_RETRY_ATTEMPTS = 3
-        private const val ASSET_RETRY_DELAY_MS = 1_000L
-        private const val ASSET_READ_TIMEOUT_MS = 90_000
-        private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
+        private const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+    }
+}
+
+/** RFC 7636 PKCE helper for the browser-to-app authorization callback. */
+object GitHubOAuthPkce {
+    fun newVerifier(): String {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+    }
+
+    fun challenge(verifier: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(verifier.toByteArray(Charsets.US_ASCII))
+        return Base64.encodeToString(
+            digest,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
     }
 }
