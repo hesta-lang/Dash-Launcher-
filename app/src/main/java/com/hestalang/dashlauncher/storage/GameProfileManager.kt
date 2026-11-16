@@ -74,6 +74,26 @@ class GameProfileManager(
         return profiles
     }
 
+    /**
+     * Stable Android package identity for one version/profile pair.
+     *
+     * The profile UUID, rather than its editable display name, keeps the installed app identity
+     * stable when the user renames a profile. The version segment prevents different game
+     * versions from replacing one another.
+     */
+    fun packageNameForProfile(version: String, profileId: String): String {
+        validateVersion(version)
+        require(PROFILE_ID_PATTERN.matches(profileId)) {
+            "El identificador del perfil no es válido."
+        }
+        val versionToken = version.lowercase()
+            .replace(Regex("[^a-z0-9_]"), "_")
+            .trim('_')
+        val profileToken = profileId.lowercase()
+            .replace(Regex("[^a-z0-9_]"), "")
+        return "com.hestalang.dashlauncher.gd.v" + versionToken + ".p" + profileToken
+    }
+
     fun listProfiles(version: String): List<GameProfileRecord> {
         val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
         ensureDirectory(profilesRoot(localVersion.profileDirectory))
