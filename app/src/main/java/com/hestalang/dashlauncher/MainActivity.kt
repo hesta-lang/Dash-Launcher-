@@ -84,6 +84,7 @@ import com.hestalang.dashlauncher.storage.GameProfileManager
 import com.hestalang.dashlauncher.security.GitHubSessionStore
 import com.hestalang.dashlauncher.private_storage.GitHubPrivateStorageRepository
 import com.hestalang.dashlauncher.private_storage.PrivateVersionInfo
+import com.hestalang.dashlauncher.private_storage.GitHubOAuthPkce
 import com.hestalang.dashlauncher.private_storage.PrivateApkDownloadManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
