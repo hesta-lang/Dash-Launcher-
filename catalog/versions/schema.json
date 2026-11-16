@@ -39,7 +39,7 @@
       },
       "minAndroidApi": {
         "type": "integer",
-        "minimum": 23
+        "minimum": 26
       },
       "releasedAt": {
         "type": [
