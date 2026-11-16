@@ -8,6 +8,8 @@ import android.provider.Settings
 import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -53,6 +55,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.hestalang.dashlauncher.data.CatalogVersionMetadata
 import com.hestalang.dashlauncher.data.CatalogVersionRecord
@@ -67,9 +72,15 @@ import com.hestalang.dashlauncher.download.DownloadStatus
 import com.hestalang.dashlauncher.download.DownloadVerification
 import com.hestalang.dashlauncher.storage.VersionStorageManager
 import com.hestalang.dashlauncher.storage.VersionStorageSnapshot
+import com.hestalang.dashlauncher.storage.GameProfileManager
+import com.hestalang.dashlauncher.security.GitHubAccessTokenStore
+import com.hestalang.dashlauncher.private_storage.GitHubPrivateStorageRepository
+import com.hestalang.dashlauncher.private_storage.PrivateVersionInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import java.io.FileInputStream
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
@@ -155,7 +166,11 @@ private fun DashLauncherApp(
                 title = {
                     Column {
                         Text(
-                            if (selectedDestination == 0) "Dash Launcher" else "Configuración",
+                            when (selectedDestination) {
+                                0 -> "Dash Launcher"
+                                1 -> "Perfiles"
+                                else -> "Configuración"
+                            },
                             fontWeight = FontWeight.Bold
                         )
                         if (selectedDestination == 0) {
@@ -178,6 +193,7 @@ private fun DashLauncherApp(
     ) { insets ->
         when (selectedDestination) {
             0 -> VersionsScreen(Modifier.fillMaxSize().padding(insets))
+            1 -> ProfilesScreen(Modifier.fillMaxSize().padding(insets))
             else -> SettingsScreen(
                 modifier = Modifier.fillMaxSize().padding(insets),
                 selectedTheme = selectedTheme,
@@ -212,10 +228,17 @@ private fun SimpleBottomBar(
             )
             BottomBarItem(
                 modifier = Modifier.weight(1f),
-                title = "Configuración",
-                iconId = R.drawable.ic_settings,
+                title = "Perfiles",
+                iconId = R.drawable.ic_profiles,
                 selected = selectedDestination == 1,
                 onClick = { onDestinationSelected(1) }
+            )
+            BottomBarItem(
+                modifier = Modifier.weight(1f),
+                title = "Configuración",
+                iconId = R.drawable.ic_settings,
+                selected = selectedDestination == 2,
+                onClick = { onDestinationSelected(2) }
             )
         }
     }
@@ -334,6 +357,8 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        PrivateStorageVersionsCard(onApkStored = { storageRefreshCount++ })
+
         LocalVersionStorageCard(
             snapshot = storageSnapshot,
             error = storageError,
@@ -523,6 +548,627 @@ private fun LocalVersionStorageCard(
                     }
                 }
             }
+        }
+    }
+}
+
+
+@Composable
+private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
+    val context = LocalContext.current
+    val tokenStore = remember(context) { GitHubAccessTokenStore(context) }
+    val repository = remember(context) { GitHubPrivateStorageRepository(context) }
+    val storageManager = remember(context) { VersionStorageManager(context) }
+
+    var token by remember { mutableStateOf<String?>(null) }
+    var versions by remember { mutableStateOf<List<PrivateVersionInfo>>(emptyList()) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
+    var downloading by remember { mutableStateOf<PrivateVersionInfo?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(tokenStore) {
+        runCatching {
+            withContext(Dispatchers.IO) { tokenStore.readToken() }
+        }.onSuccess {
+            token = it
+        }.onFailure {
+            loadError = it.message ?: "No se pudo leer la credencial del almacenamiento privado."
+        }
+    }
+
+    LaunchedEffect(refreshCounter, token) {
+        val accessToken = token ?: return@LaunchedEffect
+        isRefreshing = true
+        loadError = null
+        runCatching {
+            withContext(Dispatchers.IO) { repository.loadVersions(accessToken) }
+        }.onSuccess {
+            versions = it
+        }.onFailure {
+            loadError = it.message ?: "No se pudo consultar el catálogo privado."
+        }
+        isRefreshing = false
+    }
+
+    LaunchedEffect(downloading, token) {
+        val selected = downloading ?: return@LaunchedEffect
+        val accessToken = token ?: return@LaunchedEffect
+        statusMessage = "Descargando y verificando ${selected.displayName}…"
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val temporary = repository.downloadAndVerify(accessToken, selected)
+                try {
+                    storageManager.storeVerifiedApk(
+                        version = selected.version,
+                        displayName = selected.displayName,
+                        input = FileInputStream(temporary),
+                        expectedSizeBytes = selected.sizeBytes,
+                        expectedSha256 = selected.sha256,
+                        packageName = selected.packageName,
+                        signingCertificateSha256 = selected.signingCertificateSha256
+                    )
+                } finally {
+                    temporary.delete()
+                }
+            }
+        }.onSuccess { stored ->
+            statusMessage = "APK verificado y guardado en ${stored.apkFile.absolutePath}."
+            onApkStored()
+        }.onFailure {
+            statusMessage = it.message ?: "No se pudo descargar la versión privada."
+        }
+        downloading = null
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    "Dash Launcher Private Storage",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Catálogo privado de APK alojados en tu repositorio de GitHub.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (token == null) {
+                Text(
+                    "Conecta un token fine-grained desde Configuración → Almacenamiento privado para consultar este repositorio.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Button(
+                    onClick = { refreshCounter++ },
+                    enabled = !isRefreshing && downloading == null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isRefreshing) "Consultando…" else "Consultar almacenamiento privado")
+                }
+                if (isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                loadError?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                versions.forEach { item ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(item.displayName, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Versión ${item.version} • ${item.sizeBytes / (1024L * 1024L)} MiB • ${item.supportedAbis.joinToString()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!item.officialSignatureVerified) {
+                                Text(
+                                    "Firma válida, pero NO verificada como firma oficial de RobTop.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            Text(item.warning, style = MaterialTheme.typography.bodySmall)
+                            Button(
+                                onClick = { downloading = item },
+                                enabled = downloading == null &&
+                                    Build.VERSION.SDK_INT >= item.minAndroidApi &&
+                                    item.supportedAbis.any { Build.SUPPORTED_ABIS.contains(it) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(if (downloading?.id == item.id) "Descargando…" else "Descargar y guardar")
+                            }
+                        }
+                    }
+                }
+                if (versions.isEmpty() && !isRefreshing && loadError == null) {
+                    Text(
+                        "El catálogo privado no contiene versiones todavía.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            statusMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivateStorageSettingsCard() {
+    val context = LocalContext.current
+    val tokenStore = remember(context) { GitHubAccessTokenStore(context) }
+    val repository = remember(context) { GitHubPrivateStorageRepository(context) }
+
+    var tokenDraft by rememberSaveable { mutableStateOf("") }
+    var connected by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var validationRequest by remember { mutableIntStateOf(0) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(tokenStore) {
+        connected = withContext(Dispatchers.IO) { tokenStore.hasToken() }
+    }
+
+    LaunchedEffect(validationRequest) {
+        if (validationRequest == 0) return@LaunchedEffect
+        val submittedToken = tokenDraft.trim()
+        if (submittedToken.isBlank()) {
+            statusMessage = "Pega el token fine-grained antes de continuar."
+            return@LaunchedEffect
+        }
+        isSaving = true
+        statusMessage = "Comprobando acceso al repositorio privado…"
+        runCatching {
+            withContext(Dispatchers.IO) {
+                repository.validateAccess(submittedToken)
+                tokenStore.saveToken(submittedToken)
+            }
+        }.onSuccess {
+            connected = true
+            tokenDraft = ""
+            statusMessage = "Conexión verificada. La credencial quedó cifrada con Android Keystore."
+        }.onFailure {
+            statusMessage = it.message ?: "No se pudo validar el token."
+        }
+        isSaving = false
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Text(
+                "Almacenamiento privado",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "Conecta Dash Launcher con hesta-lang/Dash-Launcher-Private-Storage.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = tokenDraft,
+                onValueChange = { tokenDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Token fine-grained de GitHub") },
+                placeholder = { Text("github_pat_…") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                enabled = !isSaving,
+                shape = RoundedCornerShape(12.dp)
+            )
+            Text(
+                "Crea un fine-grained personal access token para SOLO este repositorio. Permiso: Contents → Read-only (Metadata se concede automáticamente). No uses un token classic con acceso general a tus repositorios.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { validationRequest++ },
+                enabled = !isSaving && tokenDraft.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isSaving) "Comprobando…" else "Guardar y comprobar")
+            }
+            if (connected) {
+                Text("Almacenamiento conectado", color = MaterialTheme.colorScheme.primary)
+                Button(
+                    onClick = {
+                        runCatching { tokenStore.clearToken() }
+                            .onSuccess {
+                                connected = false
+                                tokenDraft = ""
+                                statusMessage = "Credencial eliminada del dispositivo."
+                            }
+                            .onFailure { statusMessage = it.message }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Desconectar")
+                }
+            } else {
+                Text(
+                    "No hay ninguna credencial conectada.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            statusMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfilesScreen(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val storageManager = remember(context) { VersionStorageManager(context) }
+    val profileManager = remember(context) { GameProfileManager(storageManager) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    var localVersions by remember { mutableStateOf(emptyList<com.hestalang.dashlauncher.storage.LocalVersionRecord>()) }
+    var selectedVersion by rememberSaveable { mutableStateOf("") }
+    var profiles by remember { mutableStateOf(emptyList<com.hestalang.dashlauncher.storage.GameProfileRecord>()) }
+    var activeProfileId by remember { mutableStateOf<String?>(null) }
+    var newProfileName by rememberSaveable { mutableStateOf("") }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var isBusy by remember { mutableStateOf(false) }
+    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
+    var importTargetProfileId by remember { mutableStateOf<String?>(null) }
+    var exportTargetProfileId by remember { mutableStateOf<String?>(null) }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val targetId = importTargetProfileId
+        if (uri != null && targetId != null && selectedVersion.isNotBlank()) {
+            scope.launch {
+                isBusy = true
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException("No se pudo abrir el archivo seleccionado.")
+                        profileManager.importGameDataBackup(selectedVersion, targetId, input)
+                    }
+                }.onSuccess {
+                    statusMessage = "Archivo ZIP guardado en el perfil. No se ha aplicado al progreso activo del juego."
+                    refreshCounter++
+                }.onFailure {
+                    statusMessage = it.message ?: "No se pudo importar el archivo ZIP."
+                }
+                isBusy = false
+                importTargetProfileId = null
+            }
+        } else {
+            importTargetProfileId = null
+        }
+    }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val targetId = exportTargetProfileId
+        if (uri != null && targetId != null && selectedVersion.isNotBlank()) {
+            scope.launch {
+                isBusy = true
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val output = context.contentResolver.openOutputStream(uri)
+                            ?: throw IllegalStateException("No se pudo crear el archivo de destino.")
+                        output.use {
+                            profileManager.exportGameDataBackup(selectedVersion, targetId, it)
+                        }
+                    }
+                }.onSuccess {
+                    statusMessage = "Archivo ZIP exportado."
+                }.onFailure {
+                    statusMessage = it.message ?: "No se pudo exportar el archivo ZIP."
+                }
+                isBusy = false
+                exportTargetProfileId = null
+            }
+        } else {
+            exportTargetProfileId = null
+        }
+    }
+
+    LaunchedEffect(refreshCounter, selectedVersion) {
+        runCatching {
+            withContext(Dispatchers.IO) { storageManager.initialize() }
+        }.onSuccess { snapshot ->
+            localVersions = snapshot.versions
+            val resolvedVersion = selectedVersion.takeIf { value ->
+                snapshot.versions.any { it.version == value }
+            } ?: snapshot.versions.firstOrNull()?.version.orEmpty()
+            if (resolvedVersion != selectedVersion) selectedVersion = resolvedVersion
+            if (resolvedVersion.isNotBlank()) {
+                val initializedProfiles = withContext(Dispatchers.IO) {
+                    profileManager.initialize(resolvedVersion, "Geometry Dash $resolvedVersion")
+                }
+                profiles = initializedProfiles
+                activeProfileId = withContext(Dispatchers.IO) {
+                    profileManager.activeProfileId(resolvedVersion)
+                }
+            } else {
+                profiles = emptyList()
+                activeProfileId = null
+            }
+        }.onFailure {
+            statusMessage = it.message ?: "No se pudieron cargar los perfiles."
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Perfiles de Geometry Dash", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Crea espacios separados para organizar perfiles y guardar archivos ZIP de respaldo por versión.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("Versión seleccionada", fontWeight = FontWeight.SemiBold)
+                if (localVersions.isEmpty()) {
+                    Text(
+                        "Primero descarga y guarda un APK desde la sección Versiones para preparar su espacio de perfiles.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    localVersions.forEach { version ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { selectedVersion = version.version }
+                                .padding(vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selectedVersion == version.version,
+                                onClick = { selectedVersion = version.version }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(version.displayName, fontWeight = FontWeight.Medium)
+                                Text(version.version, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (selectedVersion.isNotBlank()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Crear perfil", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = newProfileName,
+                        onValueChange = { newProfileName = it.take(32) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Nombre del perfil") },
+                        placeholder = { Text("Ej. Principal, Desafíos, Pruebas") },
+                        singleLine = true,
+                        enabled = !isBusy,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                isBusy = true
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        profileManager.createProfile(selectedVersion, newProfileName)
+                                    }
+                                }.onSuccess {
+                                    newProfileName = ""
+                                    statusMessage = "Perfil creado."
+                                    refreshCounter++
+                                }.onFailure {
+                                    statusMessage = it.message ?: "No se pudo crear el perfil."
+                                }
+                                isBusy = false
+                            }
+                        },
+                        enabled = !isBusy && newProfileName.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Crear perfil")
+                    }
+                }
+            }
+
+            Text(
+                "Perfiles guardados para Geometry Dash $selectedVersion",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            profiles.forEach { profile ->
+                var renameDraft by rememberSaveable(profile.id, profile.name) { mutableStateOf(profile.name) }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = activeProfileId == profile.id,
+                                onClick = {
+                                    scope.launch {
+                                        isBusy = true
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                profileManager.activateProfile(selectedVersion, profile.id)
+                                            }
+                                        }.onSuccess {
+                                            activeProfileId = profile.id
+                                            statusMessage = "Perfil seleccionado en Dash Launcher."
+                                        }.onFailure {
+                                            statusMessage = it.message ?: "No se pudo seleccionar el perfil."
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                enabled = !isBusy
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(profile.name, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (activeProfileId == profile.id) "Seleccionado en Dash Launcher" else "Perfil disponible",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    if (profile.hasGameDataBackup) {
+                                        "Respaldo ZIP: ${profile.backupSizeBytes ?: 0L} bytes"
+                                    } else {
+                                        "Sin archivo ZIP de respaldo"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = renameDraft,
+                            onValueChange = { renameDraft = it.take(32) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Cambiar nombre") },
+                            singleLine = true,
+                            enabled = !isBusy,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        isBusy = true
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                profileManager.renameProfile(selectedVersion, profile.id, renameDraft)
+                                            }
+                                        }.onSuccess {
+                                            statusMessage = "Nombre del perfil actualizado."
+                                            refreshCounter++
+                                        }.onFailure {
+                                            statusMessage = it.message ?: "No se pudo renombrar el perfil."
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                enabled = !isBusy && renameDraft.isNotBlank(),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Renombrar") }
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        isBusy = true
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                profileManager.deleteProfile(selectedVersion, profile.id)
+                                            }
+                                        }.onSuccess {
+                                            statusMessage = "Perfil eliminado."
+                                            refreshCounter++
+                                        }.onFailure {
+                                            statusMessage = it.message ?: "No se pudo eliminar el perfil."
+                                        }
+                                        isBusy = false
+                                    }
+                                },
+                                enabled = !isBusy && profiles.size > 1,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Eliminar") }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    importTargetProfileId = profile.id
+                                    importBackupLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                                },
+                                enabled = !isBusy,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Importar ZIP") }
+                            Button(
+                                onClick = {
+                                    exportTargetProfileId = profile.id
+                                    exportBackupLauncher.launch("Geometry-Dash-$selectedVersion-${profile.id}.zip")
+                                },
+                                enabled = !isBusy && profile.hasGameDataBackup,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Exportar ZIP") }
+                        }
+                    }
+                }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Límite importante de Android", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Estos perfiles separan archivos y respaldos dentro de Dash Launcher. Android no permite que el launcher lea directamente los datos privados de Geometry Dash ni que ejecute varias instalaciones del mismo paquete en paralelo. Importar un ZIP aquí lo guarda como respaldo, pero no lo aplica a la partida. Para aislar y restaurar progreso real se necesita un mod companion de Geode dentro del juego.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        statusMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -834,6 +1480,8 @@ private fun SettingsScreen(
                 }
             }
         }
+
+        PrivateStorageSettingsCard()
     }
 }
 
