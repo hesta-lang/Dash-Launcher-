@@ -267,7 +267,7 @@ class ProfileApkCloner {
                 if (entry.isDirectory ||
                     !(entry.name.matches(DEX_ENTRY) || entry.name.endsWith(".so"))
                 ) continue
-                if (entry.size <= 0L || entry.size > MAX_SCAN_ENTRY_BYTES) continue
+                if (entry.size <= 0L) continue
                 val found = zip.getInputStream(entry).use { input ->
                     containsAny(input, listOf(needle, slashNeedle))
                 }
@@ -409,9 +409,8 @@ class ProfileApkCloner {
         private const val SIGNING_KEY_ALIAS = "dash_launcher_profile_apk_signing_v1"
         private const val SIGNER_NAME = "dash-launcher-profile"
         private const val SIGNING_MIN_SDK = 23
-        private const val MAX_SCAN_ENTRY_BYTES = 96L * 1024L * 1024L
         private val PACKAGE_PATTERN = Regex("^[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
-        private val DEX_ENTRY = Regex("classes(?:[2-9][0-9]*)?\\.dex")
+        private val DEX_ENTRY = Regex("classes(?:[2-9]|[1-9][0-9]+)?\\.dex")
 
         private val COMPONENT_TAGS = setOf(
             "application", "activity", "activity-alias", "service", "receiver",
