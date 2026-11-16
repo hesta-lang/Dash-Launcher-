@@ -81,8 +81,10 @@ jobs:
             adb logcat -c
             gradle :app:connectedDebugAndroidTest
 
-            # Install the clone, then prove both distinct package IDs launch.
-            adb pull /storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
+            # Retrieve the clone from app-private test storage through run-as.
+            # The test APK is debuggable, so this avoids scoped-storage path differences.
+            adb exec-out run-as com.hestalang.dashlauncher cat files/profile-clone-validation/instance.apk > profile-instance-validation.apk
+            test -s profile-instance-validation.apk
             adb install -r profile-instance-validation.apk
 
             adb shell pm path com.robtopx.geometryjump > original-package-path.txt
