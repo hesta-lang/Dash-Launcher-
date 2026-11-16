@@ -290,6 +290,26 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
     var privateLoading by remember { mutableStateOf(true) }
     var privateError by remember { mutableStateOf<String?>(null) }
 
+
+    var storageRefreshCount by rememberSaveable { mutableIntStateOf(0) }
+    var storageSnapshot by remember { mutableStateOf<VersionStorageSnapshot?>(null) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(storageManager, storageRefreshCount) {
+        runCatching {
+            withContext(Dispatchers.IO) { storageManager.initialize() }
+        }.onSuccess { snapshot ->
+            storageSnapshot = snapshot
+            storageError = null
+        }.onFailure { error ->
+            storageError = error.message ?: "No se pudo inicializar el almacenamiento local."
+        }
+    }
+
+    var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
+    var searchText by rememberSaveable { mutableStateOf("") }
+    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
+
     LaunchedEffect(refreshCounter) {
         privateLoading = true
         privateError = null
@@ -310,24 +330,6 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    var storageRefreshCount by rememberSaveable { mutableIntStateOf(0) }
-    var storageSnapshot by remember { mutableStateOf<VersionStorageSnapshot?>(null) }
-    var storageError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(storageManager, storageRefreshCount) {
-        runCatching {
-            withContext(Dispatchers.IO) { storageManager.initialize() }
-        }.onSuccess { snapshot ->
-            storageSnapshot = snapshot
-            storageError = null
-        }.onFailure { error ->
-            storageError = error.message ?: "No se pudo inicializar el almacenamiento local."
-        }
-    }
-
-    var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
-    var searchText by rememberSaveable { mutableStateOf("") }
-    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
     var forceNextRefresh by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
