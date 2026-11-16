@@ -215,6 +215,17 @@ class VersionStorageManager internal constructor(
         check(rootDirectory.isDirectory) {
             "La ruta de almacenamiento de versiones existe, pero no es un directorio."
         }
+        ensureDirectory(instancesDirectory, "instancias")
+        ensureDirectory(cacheDirectory, "caché")
+    }
+
+    private fun ensureDirectory(directory: File, label: String) {
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("No se pudo crear la carpeta de $label.")
+        }
+        check(directory.isDirectory) {
+            "La ruta de $label existe, pero no es un directorio."
+        }
     }
 
     private fun readMetadata(directory: File): VersionStorageMetadata? {
