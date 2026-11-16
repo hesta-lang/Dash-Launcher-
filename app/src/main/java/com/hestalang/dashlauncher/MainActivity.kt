@@ -609,6 +609,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
             statusMessage = "Descarga en curso: ${active.version.displayName}."
         } else {
             statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
+            if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
         }
     }
 
@@ -616,16 +617,17 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
         val id = activeDownloadId ?: return@LaunchedEffect
         while (true) {
             val snapshot = withContext(Dispatchers.IO) { downloadManager.query(id) }
+            val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
+            if (active?.id != id) {
+                statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
+                if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
+                downloading = null
+                activeDownloadId = null
+                isVerifyingDownload = false
+                break
+            }
             if (snapshot == null) {
-                val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
-                if (active?.id != id) {
-                    statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
-                    if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
-                    downloading = null
-                    activeDownloadId = null
-                    isVerifyingDownload = false
-                    break
-                }
+                statusMessage = "Android está preparando el estado de la descarga…"
             } else {
                 downloadedBytes = snapshot.downloadedBytes.coerceAtLeast(0L)
                 downloadTotalBytes = if (snapshot.totalBytes > 0L) snapshot.totalBytes else downloading?.sizeBytes ?: 0L
