@@ -112,7 +112,9 @@ class CatalogJsonParserTest {
                 "provider": "direct",
                 "url": "https://downloads.example.test/gd.apk",
                 "sizeBytes": 1024,
-                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "packageName": "com.robtopx.geometryjump",
+                "signingCertificateSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
               }
             }
         """.trimIndent()
@@ -120,6 +122,8 @@ class CatalogJsonParserTest {
         val metadata = CatalogJsonParser.parseMetadata(json, record)
         assertEquals("direct", metadata.artifact?.providerId)
         assertEquals(1024L, metadata.artifact?.sizeBytes)
+        assertEquals("com.robtopx.geometryjump", metadata.artifact?.packageName)
+        assertEquals("b".repeat(64), metadata.artifact?.signingCertificateSha256)
     }
 
     @Test
@@ -134,6 +138,30 @@ class CatalogJsonParserTest {
               "artifact": {
                 "provider": "direct",
                 "url": "https://downloads.example.test/gd.apk"
+              }
+            }
+        """.trimIndent()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogJsonParser.parseMetadata(json, record)
+        }
+    }
+
+    @Test
+    fun rejectsDirectArtifactWithoutVerifiedPackageIdentity() {
+        val json = """
+            {
+              "id": "gd-2.2081-arm64",
+              "description": "Incomplete package identity.",
+              "platform": "android",
+              "minAndroidApi": 26,
+              "supportedAbis": ["arm64-v8a"],
+              "artifact": {
+                "provider": "direct",
+                "url": "https://downloads.example.test/gd.apk",
+                "sizeBytes": 1024,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "packageName": "com.robtopx.geometryjump"
               }
             }
         """.trimIndent()
