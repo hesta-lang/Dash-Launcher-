@@ -56,18 +56,18 @@ jobs:
             gradle :app:assembleRelease
 
             # Exercise the optimized APK on the API 29 emulator, not just the compiler.
+            adb logcat -c
             adb install -r app/build/outputs/apk/release/app-release.apk
             adb shell am force-stop com.hestalang.dashlauncher
             adb shell am start -W -n com.hestalang.dashlauncher/.MainActivity
             sleep 5
 
-            RESUMED_ACTIVITY="$(adb shell dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity' || true)"
-            echo "$RESUMED_ACTIVITY"
-            if ! printf '%s' "$RESUMED_ACTIVITY" | grep -q 'com.hestalang.dashlauncher'; then
-              echo "Dash Launcher did not remain in the foreground after cold start."
-              adb logcat -d -t 500 -s AndroidRuntime:E ActivityManager:E ActivityTaskManager:E
-              exit 1
-            fi
+            # Capture diagnostics before checking the process/activity state.
+            adb shell dumpsys activity activities > startup-activities.txt
+            adb logcat -d -t 5000 > startup-logcat.txt
+
+            adb shell pidof com.hestalang.dashlauncher > /dev/null || (echo "Dash Launcher process exited during cold start."; tail -n 500 startup-logcat.txt; exit 1)
+            grep -E 'mResumedActivity|ResumedActivity' startup-activities.txt | grep -q 'com.hestalang.dashlauncher' || (echo "Dash Launcher is not the resumed activity after cold start."; cat startup-activities.txt; tail -n 500 startup-logcat.txt; exit 1)
 
       - name: Upload optimized release APK
         uses: actions/upload-artifact@v4
