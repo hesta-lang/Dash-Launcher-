@@ -4,10 +4,6 @@ import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.work.Data
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 
 /** Schedules verification even if Dash Launcher is no longer open. */
 class PrivateApkDownloadReceiver : BroadcastReceiver() {
@@ -17,11 +13,6 @@ class PrivateApkDownloadReceiver : BroadcastReceiver() {
         if (id <= 0L) return
         val preferences = context.getSharedPreferences(PrivateApkDownloadManager.PREFERENCES, Context.MODE_PRIVATE)
         if (!preferences.contains(PrivateApkDownloadManager.VERSION_KEY_PREFIX + id)) return
-        val request = OneTimeWorkRequestBuilder<PrivateApkDownloadWorker>()
-            .setInputData(Data.Builder().putLong(PrivateApkDownloadWorker.KEY_DOWNLOAD_ID, id).build())
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            "private-apk-verification-$id", ExistingWorkPolicy.KEEP, request
-        )
+        PrivateApkDownloadManager(context).scheduleVerification(id)
     }
 }
