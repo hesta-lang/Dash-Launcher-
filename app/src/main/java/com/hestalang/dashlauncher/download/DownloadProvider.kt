@@ -7,6 +7,9 @@ data class DownloadArtifact(
     val url: String,
     val expectedSizeBytes: Long,
     val expectedSha256: String,
+    val expectedPackageName: String,
+    val expectedSigningCertificateSha256: String,
+    val supportedAbis: List<String>,
     val fileName: String,
     val versionLabel: String
 )
@@ -48,8 +51,18 @@ class CatalogDirectDownloadProvider : DownloadProvider {
             ?: return DownloadResolution.Unavailable(
                 "Falta el SHA-256 verificado del APK; la descarga permanece deshabilitada."
             )
+        val packageName = version.packageName
+            ?: return DownloadResolution.Unavailable(
+                "Falta el identificador oficial del paquete; la descarga permanece deshabilitada."
+            )
+        val signerHash = version.signingCertificateSha256
+            ?: return DownloadResolution.Unavailable(
+                "Falta la huella del certificado de firma; la descarga permanece deshabilitada."
+            )
 
-        val validationError = DownloadArtifactValidator.validationError(url, size, hash)
+        val validationError = DownloadArtifactValidator.validationError(
+            url, size, hash, packageName, signerHash, version.supportedAbis
+        )
         if (validationError != null) {
             return DownloadResolution.Unavailable(validationError)
         }
@@ -66,6 +79,9 @@ class CatalogDirectDownloadProvider : DownloadProvider {
                 url = url,
                 expectedSizeBytes = size,
                 expectedSha256 = hash.lowercase(),
+                expectedPackageName = packageName,
+                expectedSigningCertificateSha256 = signerHash.lowercase(),
+                supportedAbis = version.supportedAbis.distinct(),
                 fileName = "geometry-dash-$safeId.apk",
                 versionLabel = version.version
             )
@@ -135,7 +151,10 @@ object DownloadArtifactValidator {
     fun validationError(
         url: String,
         sizeBytes: Long,
-        sha256: String
+        sha256: String,
+        packageName: String?,
+        signingCertificateSha256: String?,
+        supportedAbis: List<String>
     ): String? {
         if (url.isBlank() || url != url.trim()) {
             return "La URL de descarga está vacía o contiene espacios no válidos."
@@ -158,6 +177,16 @@ object DownloadArtifactValidator {
         }
         if (!sha256Pattern.matches(sha256)) {
             return "El SHA-256 debe contener exactamente 64 caracteres hexadecimales."
+        }
+        if (packageName != "com.robtopx.geometryjump") {
+            return "El APK no declara el paquete oficial de Geometry Dash."
+        }
+        if (signingCertificateSha256.isNullOrBlank() || !sha256Pattern.matches(signingCertificateSha256)) {
+            return "La huella SHA-256 del certificado de firma no está verificada."
+        }
+        val knownAbis = setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        if (supportedAbis.isEmpty() || supportedAbis.any { it !in knownAbis } || supportedAbis.distinct().size != supportedAbis.size) {
+            return "El APK debe declarar una lista válida y no vacía de arquitecturas ABI."
         }
 
         return null
