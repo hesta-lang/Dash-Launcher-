@@ -15,7 +15,9 @@ class CatalogDirectDownloadProviderTest {
         hash: String? = validHash,
         id: String = "2.2081",
         providerId: String = "direct",
-        providerName: String? = null
+        providerName: String? = null,
+        packageName: String? = "com.robtopx.geometryjump",
+        signerHash: String? = "b".repeat(64)
     ) = VersionEntry(
         id = id,
         displayName = "Geometry Dash",
@@ -28,7 +30,9 @@ class CatalogDirectDownloadProviderTest {
         sizeBytes = size,
         sha256 = hash,
         providerId = providerId,
-        providerName = providerName
+        providerName = providerName,
+        packageName = packageName,
+        signingCertificateSha256 = signerHash
     )
 
     @Test
@@ -38,6 +42,9 @@ class CatalogDirectDownloadProviderTest {
         val artifact = (result as DownloadResolution.Available).artifact
         assertEquals("geometry-dash-2-2081.apk", artifact.fileName)
         assertEquals(validHash, artifact.expectedSha256)
+        assertEquals("com.robtopx.geometryjump", artifact.expectedPackageName)
+        assertEquals("b".repeat(64), artifact.expectedSigningCertificateSha256)
+        assertEquals(listOf("arm64-v8a", "armeabi-v7a"), artifact.supportedAbis)
     }
 
     @Test
@@ -61,6 +68,26 @@ class CatalogDirectDownloadProviderTest {
     @Test
     fun rejectsInvalidSha256() {
         val result = provider.resolve(entry(hash = "not-a-hash"))
+        assertTrue(result is DownloadResolution.Unavailable)
+    }
+
+    @Test
+    fun rejectsMissingOfficialPackageName() {
+        val result = provider.resolve(entry(packageName = null))
+        assertTrue(result is DownloadResolution.Unavailable)
+        assertTrue((result as DownloadResolution.Unavailable).reason.contains("paquete"))
+    }
+
+    @Test
+    fun rejectsMissingOrInvalidSignerFingerprint() {
+        val result = provider.resolve(entry(signerHash = "not-a-fingerprint"))
+        assertTrue(result is DownloadResolution.Unavailable)
+        assertTrue((result as DownloadResolution.Unavailable).reason.contains("certificado"))
+    }
+
+    @Test
+    fun rejectsNonOfficialPackageName() {
+        val result = provider.resolve(entry(packageName = "com.example.fake"))
         assertTrue(result is DownloadResolution.Unavailable)
     }
 
