@@ -1014,7 +1014,7 @@ private fun VersionDownloadAction(
         }
 
         val gameVersion = artifact.versionLabel
-        val versionPackageName = versionInstaller.packageNameForVersion(gameVersion)
+        val versionPackageName = VersionInstallationManager.packageNameForVersion(gameVersion)
         val sourceApkPath = storedApkPath
 
         if (sourceApkPath != null && File(sourceApkPath).isFile) {
