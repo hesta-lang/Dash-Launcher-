@@ -1156,9 +1156,9 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Perfiles de Geometry Dash", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Instancias de Geometry Dash", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "Cada perfil puede tener su propia instalación de Geometry Dash, con identificador Android y datos de aplicación independientes.",
+                "Cada instancia tiene su propio nombre, configuración del launcher y paquete Android. Los APK base se comparten por versión; Android mantiene los datos privados separados para cada paquete.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1208,12 +1208,12 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Crear perfil", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Crear instancia", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     OutlinedTextField(
                         value = newProfileName,
                         onValueChange = { newProfileName = it.take(32) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Nombre del perfil") },
+                        label = { Text("Nombre de la instancia") },
                         placeholder = { Text("Ej. Principal, Desafíos, Pruebas") },
                         singleLine = true,
                         enabled = !isBusy,
@@ -1229,7 +1229,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                     }
                                 }.onSuccess {
                                     newProfileName = ""
-                                    statusMessage = "Perfil creado."
+                                    statusMessage = "Instancia creada."
                                     refreshCounter++
                                 }.onFailure {
                                     statusMessage = it.message ?: "No se pudo crear el perfil."
@@ -1240,13 +1240,13 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                         enabled = !isBusy && newProfileName.isNotBlank(),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Crear perfil")
+                        Text("Crear instancia")
                     }
                 }
             }
 
             Text(
-                "Perfiles guardados para Geometry Dash $selectedVersion",
+                "Instancias de Geometry Dash $selectedVersion",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -1270,7 +1270,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                             }
                                         }.onSuccess {
                                             activeProfileId = profile.id
-                                            statusMessage = "Perfil seleccionado en Dash Launcher."
+                                            statusMessage = "Instancia seleccionada en Dash Launcher."
                                         }.onFailure {
                                             statusMessage = it.message ?: "No se pudo seleccionar el perfil."
                                         }
@@ -1282,15 +1282,15 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                             Column(Modifier.weight(1f)) {
                                 Text(profile.name, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    if (activeProfileId == profile.id) "Seleccionado en Dash Launcher" else "Perfil disponible",
+                                    if (activeProfileId == profile.id) "Instancia seleccionada" else "Instancia disponible",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
                                     if (profile.hasGameDataBackup) {
-                                        "Respaldo ZIP: ${profile.backupSizeBytes ?: 0L} bytes"
+                                        "Respaldo de instancia: ${profile.backupSizeBytes ?: 0L} bytes"
                                     } else {
-                                        "Sin archivo ZIP de respaldo"
+                                        "Sin respaldo de esta instancia"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1382,7 +1382,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                             value = renameDraft,
                             onValueChange = { renameDraft = it.take(32) },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Cambiar nombre") },
+                            label = { Text("Cambiar nombre de instancia") },
                             singleLine = true,
                             enabled = !isBusy,
                             shape = RoundedCornerShape(12.dp)
@@ -1397,10 +1397,10 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                                 profileManager.renameProfile(selectedVersion, profile.id, renameDraft)
                                             }
                                         }.onSuccess {
-                                            statusMessage = "Nombre del perfil actualizado."
+                                            statusMessage = "Nombre de la instancia actualizado."
                                             refreshCounter++
                                         }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo renombrar el perfil."
+                                            statusMessage = it.message ?: "No se pudo renombrar la instancia."
                                         }
                                         isBusy = false
                                     }
@@ -1417,10 +1417,10 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
                                                 profileManager.deleteProfile(selectedVersion, profile.id)
                                             }
                                         }.onSuccess {
-                                            statusMessage = "Perfil eliminado."
+                                            statusMessage = "Instancia eliminada."
                                             refreshCounter++
                                         }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo eliminar el perfil."
+                                            statusMessage = it.message ?: "No se pudo eliminar la instancia."
                                         }
                                         isBusy = false
                                     }
@@ -1460,7 +1460,7 @@ private fun ProfilesScreen(modifier: Modifier = Modifier) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Instancias y compatibilidad", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Cada perfil genera un APK con un identificador Android distinto y una firma local de Dash Launcher; Android reserva un espacio de datos separado para cada paquete. Esta primera fase modifica el manifiesto y la tabla de recursos, pero no reescribe código DEX ni bibliotecas nativas. Si el análisis detecta referencias al paquete original, se mostrarán avisos y algunas funciones podrían no funcionar. La firma del clon no es la firma original de RobTop. Importar o exportar ZIP todavía solo guarda respaldos; no los aplica al progreso del juego. Para eliminar un perfil, primero desinstala su instancia desde los ajustes de Android.",
+                    "Cada instancia tiene una carpeta propia dentro de instances/ y un identificador de paquete Android independiente. El APK original verificado se conserva una sola vez en versions/<versión>/ y sirve como base para generar la instancia. Android reserva un sandbox privado distinto para cada paquete. La copia del APK de instalación queda dentro de la carpeta de su instancia. Esta primera fase modifica el manifiesto y la tabla de recursos, pero no reescribe código DEX ni bibliotecas nativas; algunas funciones del juego podrían depender del identificador original y fallar. La firma de cada clon es local de Dash Launcher, no la firma original de RobTop. Los ZIP se guardan en instances/<instancia>/backups/ y todavía no se aplican al progreso. Para eliminar una instancia instalada, primero desinstálala desde los ajustes de Android.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
