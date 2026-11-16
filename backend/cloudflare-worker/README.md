@@ -41,25 +41,90 @@ Use the GitHub App's **App ID** (not Client ID) for `GITHUB_APP_ID`, its
 **Client ID** and **Client Secret** for the OAuth variables, and the installation
 ID for `GITHUB_INSTALLATION_ID`.
 
-## Cloudflare setup
+## Cloudflare setup and deployment from GitHub Actions
 
-1. Create a Worker named `dash-launcher-api`.
-2. Create a Workers KV namespace named `DASH_LAUNCHER_AUTH`.
-3. Copy its namespace ID into `wrangler.toml`, replacing
-   `REPLACE_WITH_CLOUDFLARE_KV_NAMESPACE_ID`.
-4. Configure the following Worker secrets in Cloudflare:
-   - `GITHUB_APP_ID`
-   - `GITHUB_INSTALLATION_ID`
-   - `GITHUB_APP_PRIVATE_KEY` (the complete PEM contents)
-   - `GITHUB_OAUTH_CLIENT_ID`
-   - `GITHUB_OAUTH_CLIENT_SECRET`
-   - `SESSION_HMAC_SECRET` (at least 32 random characters)
-5. Keep `ALLOWED_GITHUB_USERS` set to the GitHub accounts allowed to connect.
-6. Deploy this Worker. The health endpoint is `/health`.
+### 1. Create the KV namespace
 
-Do not put any of the secret values in GitHub files, Android resources, BuildConfig,
+1. Open the Cloudflare dashboard and select **Workers & Pages → KV**.
+2. Create a namespace named `DASH_LAUNCHER_AUTH`.
+3. Copy the namespace ID and replace
+   `REPLACE_WITH_CLOUDFLARE_KV_NAMESPACE_ID` in `wrangler.toml`.
+4. Commit the change to the deployment branch.
+
+The KV namespace stores only short-lived OAuth state and one-time exchange
+codes; it does not store APKs, GitHub tokens, or the App private key.
+
+### 2. Configure GitHub Actions deployment credentials
+
+Create a Cloudflare API token limited to the relevant account and the permissions
+needed to deploy Workers and use the already-created KV binding. In the GitHub
+repository `hesta-lang/Dash-Launcher-`, open **Settings → Secrets and variables
+→ Actions → New repository secret** and add:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Do not add any GitHub App private key or OAuth secret as repository secrets.
+The deploy workflow only needs Cloudflare deployment credentials.
+
+### 3. Deploy the Worker
+
+Open **Actions → Deploy Dash Launcher private-storage backend → Run workflow**.
+The workflow publishes the Worker from `backend/cloudflare-worker/`.
+
+After the first deployment, copy the Worker URL. It will look like:
+
+`https://dash-launcher-api.<your-account-subdomain>.workers.dev`
+
+Open that URL followed by `/health`; it should return a small JSON response
+with `ok: true`.
+
+### 4. Register and install the GitHub App
+
+Create a GitHub App owned by `hesta-lang`:
+
+1. Set the homepage URL to the Dash Launcher repository.
+2. Set the user authorization callback URL to the deployed Worker's exact
+   `/auth/callback` URL.
+3. Disable webhook delivery unless you later add a webhook feature.
+4. Under Repository permissions, set **Contents: Read-only**.
+5. Do not request write permissions, organization permissions, or unrelated account permissions.
+6. Generate a private key and keep the downloaded PEM file private.
+7. Install the app on **only** `Dash-Launcher-Private-Storage`.
+8. Under the installation, confirm the selected repository is only
+   `Dash-Launcher-Private-Storage`.
+
+Use the GitHub App's **App ID** (not Client ID) for `GITHUB_APP_ID`, its
+**Client ID** and **Client Secret** for the OAuth variables, and the installation
+ID for `GITHUB_INSTALLATION_ID`.
+
+### 5. Add Worker secrets
+
+In Cloudflare, open **Workers & Pages → dash-launcher-api → Settings → Variables
+and Secrets**. Add the following as **encrypted secrets**, not plain variables:
+
+- `GITHUB_APP_ID`
+- `GITHUB_INSTALLATION_ID`
+- `GITHUB_APP_PRIVATE_KEY` (the complete PEM contents)
+- `GITHUB_OAUTH_CLIENT_ID`
+- `GITHUB_OAUTH_CLIENT_SECRET`
+- `SESSION_HMAC_SECRET` (at least 32 random characters)
+
+Keep `ALLOWED_GITHUB_USERS` set to the GitHub accounts allowed to connect.
+The initial allowlist contains only `hesta-lang`; add other usernames only
+when you deliberately want to grant them access.
+
+Do not put any secret values in GitHub files, Android resources, BuildConfig,
 workflow YAML, screenshots, issues, or chat messages. Use Cloudflare's encrypted
 Secrets interface. The Worker source contains no credentials.
+
+### 6. Point the Android app at the deployed Worker
+
+After the Worker is deployed, update
+`app/src/main/java/com/hestalang/dashlauncher/private_storage/DashBackendConfiguration.kt`
+to use the exact `workers.dev` URL from your deployment. Commit the change and
+let Android CI build the APK. The app's GitHub sign-in cannot work while the
+placeholder URL is still present.
 
 ## API routes
 
