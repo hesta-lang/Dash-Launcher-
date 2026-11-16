@@ -63,6 +63,36 @@ class PrivateApkDownloadManager(context: Context) {
         }
     }
 
+    fun scheduleVerification(id: Long) {
+        if (!preferences.contains(VERSION_KEY_PREFIX + id)) return
+        val request = androidx.work.OneTimeWorkRequestBuilder<PrivateApkDownloadWorker>()
+            .setInputData(
+                androidx.work.Data.Builder()
+                    .putLong(PrivateApkDownloadWorker.KEY_DOWNLOAD_ID, id)
+                    .build()
+            )
+            .build()
+        androidx.work.WorkManager.getInstance(appContext).enqueueUniqueWork(
+            verificationWorkName(id),
+            androidx.work.ExistingWorkPolicy.KEEP,
+            request
+        )
+        setVerificationStage(id, "Esperando al verificador de APK…")
+    }
+
+    fun setVerificationStage(id: Long, stage: String) {
+        preferences.edit().putString(VERIFICATION_STAGE_PREFIX + id, stage).apply()
+    }
+
+    fun verificationStage(id: Long): String? =
+        preferences.getString(VERIFICATION_STAGE_PREFIX + id, null)
+
+    fun clearVerificationStage(id: Long) {
+        preferences.edit().remove(VERIFICATION_STAGE_PREFIX + id).apply()
+    }
+
+    fun verificationWorkName(id: Long): String = "private-apk-verification-$id"
+
     fun resultMessage(): String? = preferences.getString(RESULT_KEY, null)
 
     companion object {
@@ -71,5 +101,6 @@ class PrivateApkDownloadManager(context: Context) {
         const val RESULT_KEY = "last_result"
         const val NO_DOWNLOAD = -1L
         const val VERSION_KEY_PREFIX = "version_json_"
+        const val VERIFICATION_STAGE_PREFIX = "verification_stage_"
     }
 }
