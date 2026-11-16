@@ -42,6 +42,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.hestalang.dashlauncher.install.GeometryDashInstallManager
+import com.hestalang.dashlauncher.install.InstallRequestResult
+import com.hestalang.dashlauncher.install.InstalledGeometryDash
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -473,6 +480,36 @@ private fun LocalVersionStorageCard(
     error: String?,
     onRefresh: () -> Unit
 ) {
+    val context = LocalContext.current
+    val installManager = remember(context) { GeometryDashInstallManager(context) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var installedGame by remember { mutableStateOf<InstalledGeometryDash?>(null) }
+    var actionMessage by remember { mutableStateOf<String?>(null) }
+
+    val refreshInstalledGame: () -> Unit = {
+        scope.launch {
+            installedGame = withContext(Dispatchers.IO) {
+                installManager.installedGameInfo()
+            }
+        }
+    }
+
+    LaunchedEffect(installManager) {
+        refreshInstalledGame()
+    }
+
+    DisposableEffect(lifecycleOwner, installManager) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshInstalledGame()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -492,13 +529,45 @@ private fun LocalVersionStorageCard(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "Carpeta común para todas las versiones de Geometry Dash",
+                        "Biblioteca de APK guardados por versión",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Button(onClick = onRefresh, enabled = snapshot != null) {
+                Button(
+                    onClick = {
+                        onRefresh()
+                        refreshInstalledGame()
+                    },
+                    enabled = snapshot != null
+                ) {
                     Text("Escanear")
+                }
+            }
+
+            Text(
+                if (installedGame == null) {
+                    "Geometry Dash no está instalado."
+                } else {
+                    "Geometry Dash instalado • versión Android: " +
+                        (installedGame?.versionName ?: "desconocida") +
+                        " • código " + installedGame?.versionCode
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (installedGame != null) {
+                Button(
+                    onClick = {
+                        runCatching { installManager.launchInstalledGame() }
+                            .onFailure {
+                                actionMessage = it.message ?: "No se pudo iniciar Geometry Dash."
+                            }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Jugar Geometry Dash")
                 }
             }
 
@@ -523,34 +592,71 @@ private fun LocalVersionStorageCard(
                         if (snapshot.versions.isEmpty()) {
                             "Carpeta lista. Todavía no hay APK guardados."
                         } else {
-                            snapshot.versions.size.toString() + " versión(es) en el almacenamiento local."
+                            snapshot.versions.size.toString() + " versión(es) guardadas."
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                     snapshot.versions.forEach { localVersion ->
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(vertical = 5.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    localVersion.displayName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    localVersion.directory.name + " • " +
-                                        if (localVersion.hasApk) "APK guardado" else "Perfil preparado; APK pendiente",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        localVersion.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        localVersion.version + " • " +
+                                            if (localVersion.hasApk) "APK guardado" else "APK pendiente",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (localVersion.hasApk) {
+                                Button(
+                                    onClick = {
+                                        runCatching {
+                                            installManager.openInstaller(localVersion.apkFile)
+                                        }.onSuccess { result ->
+                                            actionMessage = when (result) {
+                                                InstallRequestResult.PERMISSION_REQUIRED ->
+                                                    "Autoriza la instalación de aplicaciones para Dash Launcher y vuelve a pulsar Instalar."
+                                                InstallRequestResult.INSTALLER_OPENED ->
+                                                    "Instalador de Android abierto para Geometry Dash ${localVersion.version}. Confirma la instalación en Android."
+                                            }
+                                        }.onFailure {
+                                            actionMessage = it.message ?: "No se pudo abrir el instalador de Android."
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Instalar / cambiar a esta versión")
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            Text(
+                "Cambiar de versión reemplaza la instalación actual del mismo paquete. Android puede rechazar el cambio si la firma no coincide o si la versión es inferior. Dash Launcher nunca desinstala Geometry Dash automáticamente.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            actionMessage?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }
