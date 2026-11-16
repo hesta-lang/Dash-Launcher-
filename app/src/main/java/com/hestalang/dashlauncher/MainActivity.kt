@@ -588,7 +588,7 @@ private fun PrivateStorageSection(
                             .replace(Regex("[^a-z0-9_-]"), "-")
                             .take(48)
                         val artifact = DownloadArtifact(
-                            url = version.downloadUrl(),
+                            url = version.downloadUrl,
                             expectedSizeBytes = version.sizeBytes,
                             expectedSha256 = version.sha256,
                             expectedPackageName = version.packageName,
@@ -596,7 +596,6 @@ private fun PrivateStorageSection(
                             supportedAbis = version.supportedAbis,
                             fileName = "geometry-dash-$safeId.apk",
                             versionLabel = version.version,
-                            authorizationToken = token
                         )
                         VersionDownloadAction(
                             resolution = DownloadResolution.Available(artifact),
