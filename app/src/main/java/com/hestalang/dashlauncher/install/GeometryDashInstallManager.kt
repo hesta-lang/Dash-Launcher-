@@ -11,6 +11,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 
 data class InstalledGeometryDash(
+    val packageName: String,
     val versionName: String?,
     val versionCode: Long
 )
@@ -21,44 +22,81 @@ enum class InstallRequestResult {
 }
 
 /**
- * Bridges the launcher's private APK library with Android's package installer.
- *
- * Android still owns installation and confirmation. This class never silently
- * uninstalls an existing game or attempts to bypass signature/downgrade checks.
+ * Creates profile-specific Geometry Dash APKs and asks Android to install them.
+ * Android still owns the final installation confirmation; this class never uninstalls apps.
  */
 class GeometryDashInstallManager(context: Context) {
     private val appContext = context.applicationContext
     private val packageManager = appContext.packageManager
+    private val cloner = ProfileApkCloner()
 
-    fun installedGameInfo(): InstalledGeometryDash? {
+    fun installedGameInfo(): InstalledGeometryDash? =
+        installedPackageInfo(GAME_PACKAGE)
+
+    fun installedPackageInfo(packageName: String): InstalledGeometryDash? {
         val info = runCatching {
-            getInstalledPackageInfo()
+            getInstalledPackageInfo(packageName)
         }.getOrNull() ?: return null
 
         return InstalledGeometryDash(
+            packageName = packageName,
             versionName = info.versionName,
             versionCode = info.toLongVersionCodeCompat()
         )
     }
 
-    fun launchInstalledGame() {
-        val launchIntent = packageManager.getLaunchIntentForPackage(GAME_PACKAGE)
+    fun isPackageInstalled(packageName: String): Boolean =
+        installedPackageInfo(packageName) != null
+
+    fun launchInstalledGame() = launchGame(GAME_PACKAGE)
+
+    fun launchGame(packageName: String) {
+        require(PACKAGE_PATTERN.matches(packageName)) {
+            "El identificador de la instancia no es válido."
+        }
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             ?: throw IllegalStateException(
-                "Geometry Dash está instalado, pero Android no encontró una actividad para iniciarlo."
+                "Android no encontró una actividad para iniciar la instancia $packageName."
             )
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         appContext.startActivity(launchIntent)
     }
 
-    fun openInstaller(apkFile: File): InstallRequestResult {
+    /**
+     * Rewrites and signs a source APK for the supplied profile package identity.
+     * The source is left untouched and the output is kept inside the profile directory.
+     */
+    fun buildProfileInstance(
+        sourceApk: File,
+        outputApk: File,
+        packageName: String,
+        displayLabel: String
+    ): ProfileApkCloneResult = cloner.build(
+        sourceApk = sourceApk,
+        outputApk = outputApk,
+        newPackageName = packageName,
+        displayLabel = displayLabel
+    )
+
+    fun openInstaller(apkFile: File): InstallRequestResult =
+        openInstallerForPackage(apkFile, GAME_PACKAGE)
+
+    fun openInstallerForPackage(
+        apkFile: File,
+        expectedPackageName: String
+    ): InstallRequestResult {
         require(apkFile.isFile && apkFile.canRead()) {
-            "El APK de esta versión no existe o no se puede leer."
+            "El APK de esta instancia no existe o no se puede leer."
+        }
+        require(PACKAGE_PATTERN.matches(expectedPackageName)) {
+            "El identificador esperado no es válido."
         }
 
         val archiveInfo = getArchivePackageInfo(apkFile)
-            ?: throw IllegalArgumentException("Android no pudo leer el APK guardado.")
-        require(archiveInfo.packageName == GAME_PACKAGE) {
-            "El archivo no es Geometry Dash: paquete detectado ${archiveInfo.packageName}."
+            ?: throw IllegalArgumentException("Android no pudo leer el APK generado.")
+        require(archiveInfo.packageName == expectedPackageName) {
+            "El paquete del APK generado no coincide. Esperado: " +
+                expectedPackageName + "; detectado: " + archiveInfo.packageName + "."
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
@@ -66,7 +104,7 @@ class GeometryDashInstallManager(context: Context) {
         ) {
             val permissionIntent = Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${appContext.packageName}")
+                Uri.parse("package:" + appContext.packageName)
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             appContext.startActivity(permissionIntent)
             return InstallRequestResult.PERMISSION_REQUIRED
@@ -74,7 +112,7 @@ class GeometryDashInstallManager(context: Context) {
 
         val apkUri = FileProvider.getUriForFile(
             appContext,
-            "${appContext.packageName}.files",
+            appContext.packageName + ".files",
             apkFile
         )
         val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
@@ -86,15 +124,15 @@ class GeometryDashInstallManager(context: Context) {
         return InstallRequestResult.INSTALLER_OPENED
     }
 
-    private fun getInstalledPackageInfo(): PackageInfo =
+    private fun getInstalledPackageInfo(packageName: String): PackageInfo =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             packageManager.getPackageInfo(
-                GAME_PACKAGE,
+                packageName,
                 PackageManager.PackageInfoFlags.of(0L)
             )
         } else {
             @Suppress("DEPRECATION")
-            packageManager.getPackageInfo(GAME_PACKAGE, 0)
+            packageManager.getPackageInfo(packageName, 0)
         }
 
     private fun getArchivePackageInfo(file: File): PackageInfo? =
@@ -115,5 +153,7 @@ class GeometryDashInstallManager(context: Context) {
     companion object {
         const val GAME_PACKAGE = "com.robtopx.geometryjump"
         private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
+        private val PACKAGE_PATTERN =
+            Regex("^[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
     }
 }
