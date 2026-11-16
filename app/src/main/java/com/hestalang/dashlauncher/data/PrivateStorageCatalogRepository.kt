@@ -12,6 +12,7 @@ data class PrivateStorageVersion(
     val displayName: String,
     val tag: String,
     val assetName: String,
+    val downloadUrl: String,
     val sizeBytes: Long,
     val sha256: String,
     val packageName: String,
@@ -20,13 +21,7 @@ data class PrivateStorageVersion(
     val minAndroidApi: Int,
     val officialSignatureVerified: Boolean,
     val warning: String?
-) {
-    fun downloadUrl(): String {
-        val safeTag = URLEncoder.encode(tag, Charsets.UTF_8.name()).replace("+", "%20")
-        val safeAsset = URLEncoder.encode(assetName, Charsets.UTF_8.name()).replace("+", "%20")
-        return "https://github.com/hesta-lang/Dash-Launcher-Private-Storage/releases/download/$safeTag/$safeAsset"
-    }
-}
+)
 
 class PrivateStorageCatalogRepository {
     fun load(token: String): List<PrivateStorageVersion> {
@@ -43,7 +38,7 @@ class PrivateStorageCatalogRepository {
             ?: throw IllegalStateException("El catálogo privado no contiene versiones.")
         require(versions.size() <= 100) { "El catálogo privado contiene demasiadas entradas." }
         val seen = mutableSetOf<String>()
-        return versions.map { element ->
+        val parsedVersions = versions.map { element ->
             val item = element.asJsonObject
             fun required(name: String): String =
                 item.get(name)?.takeIf { !it.isJsonNull }?.asString?.trim()
@@ -88,6 +83,7 @@ class PrivateStorageCatalogRepository {
                 displayName = required("displayName"),
                 tag = tag,
                 assetName = assetName,
+                downloadUrl = "",
                 sizeBytes = size,
                 sha256 = hash.lowercase(),
                 packageName = packageName,
@@ -98,6 +94,84 @@ class PrivateStorageCatalogRepository {
                 warning = item.get("warning")?.takeIf { !it.isJsonNull }?.asString
             )
         }.sortedByDescending { it.version }
+        return parsedVersions.map { version ->
+            version.copy(downloadUrl = resolveAssetDownloadUrl(token, version))
+        }
+    }
+
+    private fun resolveAssetDownloadUrl(token: String, version: PrivateStorageVersion): String {
+        val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name()).replace("+", "%20")
+        val releaseUrl = "https://api.github.com/repos/hesta-lang/Dash-Launcher-Private-Storage/releases/tags/$encodedTag"
+        val release = requestJson(releaseUrl, token)
+        val root = JsonParser.parseString(release).asJsonObject
+        val assets = root.getAsJsonArray("assets")
+            ?: throw IllegalStateException("El release privado no contiene archivos descargables.")
+        val asset = assets.firstOrNull { item ->
+            item.asJsonObject.get("name")?.asString == version.assetName
+        }?.asJsonObject ?: throw IllegalStateException(
+            "No se encontró el APK ${version.assetName} en el release ${version.tag}."
+        )
+        val assetSize = asset.get("size")?.asLong
+        require(assetSize == version.sizeBytes) {
+            "El tamaño del APK publicado no coincide con el catálogo privado."
+        }
+        val assetId = asset.get("id")?.asLong
+            ?: throw IllegalStateException("GitHub no devolvió el ID del APK privado.")
+        val apiAssetUrl = "https://api.github.com/repos/hesta-lang/Dash-Launcher-Private-Storage/releases/assets/$assetId"
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(apiAssetUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 12_000
+                readTimeout = 20_000
+                instanceFollowRedirects = false
+                setRequestProperty("Accept", "application/octet-stream")
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                setRequestProperty("User-Agent", "DashLauncher-Android")
+            }
+            val code = connection.responseCode
+            require(code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                code == HttpURLConnection.HTTP_MOVED_PERM ||
+                code == HttpURLConnection.HTTP_SEE_OTHER) {
+                "GitHub no devolvió un enlace temporal seguro para descargar el APK (HTTP $code)."
+            }
+            val location = connection.getHeaderField("Location")
+                ?: throw IllegalStateException("GitHub no devolvió la URL temporal del APK.")
+            val uri = URL(location).toURI()
+            require(uri.scheme.equals("https", true) &&
+                uri.host.lowercase() in setOf(
+                    "release-assets.githubusercontent.com",
+                    "objects.githubusercontent.com",
+                    "github-releases.githubusercontent.com"
+                ) && uri.userInfo == null && uri.fragment == null) {
+                "GitHub devolvió un destino de descarga no permitido."
+            }
+            return uri.toASCIIString()
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun requestJson(url: String, token: String): String {
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 12_000
+                readTimeout = 20_000
+                instanceFollowRedirects = false
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                setRequestProperty("User-Agent", "DashLauncher-Android")
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { "GitHub respondió HTTP $code al consultar el release privado." }
+            return connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun requestCatalog(token: String): String {
