@@ -29,6 +29,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
 
         val temporary = File.createTempFile("dash-private-verify-", ".apk", applicationContext.cacheDir)
         try {
+            updateStage(preferences, id, "Copiando el APK descargado al área de verificación…")
             val descriptor = downloadManager.openDownloadedFile(id)
             android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
                 FileOutputStream(temporary).use { output ->
@@ -36,7 +37,9 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
                     output.fd.sync()
                 }
             }
+            updateStage(preferences, id, "Comprobando tamaño, SHA-256, firma y arquitectura…")
             GitHubPrivateStorageRepository(applicationContext).verifyDownloadedApk(temporary, version)
+            updateStage(preferences, id, "APK válido. Guardándolo en el almacenamiento local…")
             val stored = VersionStorageManager(applicationContext).storeVerifiedApk(
                 version = version.version,
                 displayName = version.displayName,
@@ -49,6 +52,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
             preferences.edit()
                 .remove(PrivateApkDownloadManager.VERSION_KEY_PREFIX + id)
                 .remove(PrivateApkDownloadManager.ACTIVE_ID_KEY)
+                .remove(PrivateApkDownloadManager.VERIFICATION_STAGE_PREFIX + id)
                 .putString(PrivateApkDownloadManager.RESULT_KEY, "APK verificado y guardado en ${stored.apkFile.absolutePath}.")
                 .commit()
             downloadManager.remove(id)
@@ -59,6 +63,16 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
         } finally {
             temporary.delete()
         }
+    }
+
+    private fun updateStage(
+        preferences: android.content.SharedPreferences,
+        id: Long,
+        stage: String
+    ) {
+        preferences.edit()
+            .putString(PrivateApkDownloadManager.VERIFICATION_STAGE_PREFIX + id, stage)
+            .commit()
     }
 
     private fun queryStatus(manager: DownloadManager, id: Long): Pair<Int, Int>? {
@@ -74,6 +88,7 @@ class PrivateApkDownloadWorker(appContext: Context, parameters: WorkerParameters
         preferences.edit()
             .remove(PrivateApkDownloadManager.VERSION_KEY_PREFIX + id)
             .remove(PrivateApkDownloadManager.ACTIVE_ID_KEY)
+            .remove(PrivateApkDownloadManager.VERIFICATION_STAGE_PREFIX + id)
             .putString(PrivateApkDownloadManager.RESULT_KEY, message)
             .commit()
         return androidx.work.ListenableWorker.Result.failure()
