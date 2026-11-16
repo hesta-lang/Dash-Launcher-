@@ -11,7 +11,8 @@ data class DownloadArtifact(
     val expectedSigningCertificateSha256: String,
     val supportedAbis: List<String>,
     val fileName: String,
-    val versionLabel: String
+    val versionLabel: String,
+    val authorizationToken: String? = null
 )
 
 sealed interface DownloadResolution {
