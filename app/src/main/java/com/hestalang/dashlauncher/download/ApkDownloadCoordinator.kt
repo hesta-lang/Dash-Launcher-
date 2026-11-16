@@ -1,4 +1,4 @@
-package com.hest alang.dashlauncher.download
+package com.hestalang.dashlauncher.download
 
 import android.app.DownloadManager
 import android.content.Context
@@ -54,7 +54,7 @@ class ApkDownloadCoordinator(context: Context) {
             artifact.supportedAbis
         )
         require(validationError == null) { validationError ?: "Invalid download artifact" }
-        require(artifact.fileName.matches(Regex("^geometry-dash-[a-z0-9_-]+\\\\.apk$"))) {
+        require(artifact.fileName.matches(Regex("^geometry-dash-[a-z0-9_-]+\\.apk$"))) {
             "El nombre de archivo no es válido."
         }
 
