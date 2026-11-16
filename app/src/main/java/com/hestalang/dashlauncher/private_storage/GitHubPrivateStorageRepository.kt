@@ -74,7 +74,11 @@ class GitHubPrivateStorageRepository(context: Context) {
      * and validates size, SHA-256, package, signing certificate, ABI and device support.
      * The returned temporary file must be deleted by the caller after it is stored.
      */
-    fun downloadAndVerify(token: String, version: PrivateVersionInfo): File {
+    fun downloadAndVerify(
+        token: String,
+        version: PrivateVersionInfo,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): File {
         validateTokenFormat(token)
         val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name())
         val releaseJson = requestApi(
@@ -144,6 +148,7 @@ class GitHubPrivateStorageRepository(context: Context) {
 
             val digest = MessageDigest.getInstance("SHA-256")
             var copiedBytes = 0L
+            onProgress(0L, version.sizeBytes)
             input.use { source ->
                 FileOutputStream(temporaryFile).use { target ->
                     val buffer = ByteArray(32 * 1024)
@@ -157,6 +162,7 @@ class GitHubPrivateStorageRepository(context: Context) {
                         }
                         digest.update(buffer, 0, count)
                         target.write(buffer, 0, count)
+                        onProgress(copiedBytes, version.sizeBytes)
                     }
                     target.fd.sync()
                 }
