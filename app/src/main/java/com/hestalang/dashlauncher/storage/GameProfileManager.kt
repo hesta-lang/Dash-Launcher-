@@ -13,11 +13,12 @@ import java.util.UUID
 import java.util.zip.ZipFile
 
 data class GameProfileMetadata(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2,
     val id: String,
     val name: String,
     val createdAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
+    val version: String? = null,
     val gameDataBackupFileName: String? = null,
     val gameDataBackupSizeBytes: Long? = null,
     val gameDataBackupSha256: String? = null
@@ -25,7 +26,9 @@ data class GameProfileMetadata(
 
 data class GameProfileRecord(
     val id: String,
+    val version: String,
     val name: String,
+    /** The instance's own directory under instances/. */
     val directory: File,
     val createdAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
@@ -35,11 +38,15 @@ data class GameProfileRecord(
 )
 
 /**
- * Manages named launcher-side profile containers for each stored game version.
+ * Manages Prism-style, named Geometry Dash instances.
  *
- * It deliberately does not read or write Geometry Dash's private sandbox. A future
- * Geode companion bridge must supply the actual game-data archive before a profile
- * can represent isolated in-game progress.
+ * Shared game APKs remain in versions/<version>/game.apk. Each version/profile pair
+ * gets its own instances/<instance-id>/ directory, its own stable Android package
+ * identity, and therefore its own Android-managed private app-data sandbox.
+ *
+ * The launcher-side directory stores instance metadata and exported backups only.
+ * It cannot directly access another app's /data/user/0 sandbox. ZIP backups are
+ * opaque until a supported in-game companion bridge is available.
  */
 class GameProfileManager(
     private val versionStorageManager: VersionStorageManager,
@@ -49,45 +56,50 @@ class GameProfileManager(
 
     fun initialize(version: String, displayName: String = "Geometry Dash $version"): List<GameProfileRecord> {
         val localVersion = versionStorageManager.ensureVersion(version, displayName)
-        val profilesRoot = profilesRoot(localVersion.profileDirectory)
-        ensureDirectory(profilesRoot)
+        ensureDirectory(versionStorageManager.instancesDirectory)
+        migrateLegacyProfiles(version, localVersion.profileDirectory)
 
-        if (listProfilesFromRoot(profilesRoot).isEmpty()) {
+        var profiles = listProfilesFromRoot(version)
+        if (profiles.isEmpty()) {
             val now = currentTimeMillis()
             writeMetadata(
-                File(profilesRoot, DEFAULT_PROFILE_ID),
+                instanceDirectory(version, DEFAULT_PROFILE_ID),
                 GameProfileMetadata(
                     id = DEFAULT_PROFILE_ID,
                     name = DEFAULT_PROFILE_NAME,
                     createdAtEpochMillis = now,
-                    updatedAtEpochMillis = now
+                    updatedAtEpochMillis = now,
+                    version = version
                 )
             )
+            profiles = listProfilesFromRoot(version)
         }
 
-        val profiles = listProfilesFromRoot(profilesRoot)
-        val activeFile = activeProfileFile(localVersion.profileDirectory)
-        val activeId = if (activeFile.isFile) activeFile.readText(Charsets.UTF_8).trim() else ""
+        val activeFile = activeProfileFile(localVersion.directory)
+        val legacyActiveFile = File(localVersion.profileDirectory, ACTIVE_PROFILE_FILE)
+        val activeId = when {
+            activeFile.isFile -> activeFile.readText(Charsets.UTF_8).trim()
+            legacyActiveFile.isFile -> legacyActiveFile.readText(Charsets.UTF_8).trim()
+            else -> ""
+        }
         if (profiles.none { it.id == activeId }) {
-            writeActiveProfile(localVersion.profileDirectory, profiles.first().id)
+            writeActiveProfile(localVersion.directory, profiles.first().id)
+        } else if (!activeFile.isFile) {
+            // Lift the old per-version pointer into the new instance-library layout.
+            writeActiveProfile(localVersion.directory, activeId)
         }
         return profiles
     }
 
     /**
-     * Stable Android package identity for one version/profile pair.
-     *
-     * The profile UUID, rather than its editable display name, keeps the installed app identity
-     * stable when the user renames a profile. The version segment prevents different game
-     * versions from replacing one another.
+     * Stable Android package identity for one version/instance pair.
+     * The editable instance name never affects the installed package identity.
      */
     fun packageNameForProfile(version: String, profileId: String): String {
         validateVersion(version)
         require(PROFILE_ID_PATTERN.matches(profileId)) {
-            "El identificador del perfil no es válido."
+            "El identificador de la instancia no es válido."
         }
-        // Hex-encode UTF-8 bytes instead of replacing punctuation with underscores:
-        // 2.2-alpha and 2.2+alpha must never collapse to the same installed package.
         val versionToken = version.toByteArray(Charsets.UTF_8)
             .joinToString("") { byte -> "%02x".format(byte) }
         val profileToken = profileId.toByteArray(Charsets.UTF_8)
@@ -95,101 +107,110 @@ class GameProfileManager(
         return "com.hestalang.dashlauncher.gd.v" + versionToken + ".p" + profileToken
     }
 
+    /** Unique, path-safe folder ID for the shared instance library. */
+    fun instanceStorageId(version: String, profileId: String): String {
+        validateVersion(version)
+        require(PROFILE_ID_PATTERN.matches(profileId)) {
+            "El identificador de la instancia no es válido."
+        }
+        val versionToken = version.toByteArray(Charsets.UTF_8)
+            .joinToString("") { byte -> "%02x".format(byte) }
+        return "v" + versionToken + "--" + profileId
+    }
+
     fun listProfiles(version: String): List<GameProfileRecord> {
         val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
-        ensureDirectory(profilesRoot(localVersion.profileDirectory))
-        return listProfilesFromRoot(profilesRoot(localVersion.profileDirectory))
+        ensureDirectory(versionStorageManager.instancesDirectory)
+        migrateLegacyProfiles(version, localVersion.profileDirectory)
+        return listProfilesFromRoot(version)
     }
 
     fun activeProfileId(version: String): String {
-        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
         val profiles = initialize(version)
-        val activeFile = activeProfileFile(localVersion.profileDirectory)
+        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
+        val activeFile = activeProfileFile(localVersion.directory)
         val selected = if (activeFile.isFile) activeFile.readText(Charsets.UTF_8).trim() else ""
         return selected.takeIf { id -> profiles.any { it.id == id } } ?: profiles.first().id
     }
 
     fun createProfile(version: String, name: String): GameProfileRecord {
         val normalizedName = normalizeName(name)
-        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
-        val root = profilesRoot(localVersion.profileDirectory)
-        ensureDirectory(root)
-        val existing = listProfilesFromRoot(root)
+        val existing = listProfiles(version)
         require(existing.none { it.name.equals(normalizedName, ignoreCase = true) }) {
-            "Ya existe un perfil con ese nombre para Geometry Dash $version."
+            "Ya existe una instancia con ese nombre para Geometry Dash $version."
         }
 
         val id = UUID.randomUUID().toString()
         val now = currentTimeMillis()
-        val directory = File(root, id)
+        val directory = instanceDirectory(version, id)
         writeMetadata(
             directory,
             GameProfileMetadata(
                 id = id,
                 name = normalizedName,
                 createdAtEpochMillis = now,
-                updatedAtEpochMillis = now
+                updatedAtEpochMillis = now,
+                version = version
             )
         )
-        if (existing.isEmpty()) writeActiveProfile(localVersion.profileDirectory, id)
+        if (existing.isEmpty()) {
+            val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
+            writeActiveProfile(localVersion.directory, id)
+        }
         return toRecord(directory, readMetadata(directory)!!)
     }
 
     fun activateProfile(version: String, profileId: String): GameProfileRecord {
         val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
-        val profile = findProfile(localVersion.profileDirectory, profileId)
-        writeActiveProfile(localVersion.profileDirectory, profile.id)
-        return profile
+        val instance = findProfile(version, profileId)
+        writeActiveProfile(localVersion.directory, instance.id)
+        return instance
     }
 
     fun renameProfile(version: String, profileId: String, newName: String): GameProfileRecord {
         val normalizedName = normalizeName(newName)
-        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
-        val root = profilesRoot(localVersion.profileDirectory)
-        val existing = listProfilesFromRoot(root)
+        val existing = listProfiles(version)
         require(existing.none {
             it.id != profileId && it.name.equals(normalizedName, ignoreCase = true)
         }) {
-            "Ya existe otro perfil con ese nombre."
+            "Ya existe otra instancia con ese nombre."
         }
-        val profile = findProfile(localVersion.profileDirectory, profileId)
-        val directory = profile.directory
-        val metadata = readMetadata(directory) ?: error("No se pudo leer el perfil.")
+        val instance = findProfile(version, profileId)
+        val metadata = readMetadata(instance.directory) ?: error("No se pudo leer la instancia.")
         val updated = metadata.copy(name = normalizedName, updatedAtEpochMillis = currentTimeMillis())
-        writeMetadata(directory, updated)
-        return toRecord(directory, updated)
+        writeMetadata(instance.directory, updated)
+        return toRecord(instance.directory, updated)
     }
 
     fun deleteProfile(version: String, profileId: String) {
-        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
-        val profiles = listProfilesFromRoot(profilesRoot(localVersion.profileDirectory))
-        require(profiles.size > 1) { "No puedes eliminar el último perfil de una versión." }
-        val profile = profiles.firstOrNull { it.id == profileId }
-            ?: throw IllegalArgumentException("El perfil seleccionado ya no existe.")
-        require(profile.directory.deleteRecursively()) { "No se pudo eliminar el perfil." }
+        val profiles = listProfiles(version)
+        require(profiles.size > 1) { "No puedes eliminar la última instancia de una versión." }
+        val instance = profiles.firstOrNull { it.id == profileId }
+            ?: throw IllegalArgumentException("La instancia seleccionada ya no existe.")
+        require(instance.directory.deleteRecursively()) { "No se pudo eliminar la instancia." }
 
-        val activeFile = activeProfileFile(localVersion.profileDirectory)
+        val localVersion = versionStorageManager.ensureVersion(version, "Geometry Dash $version")
+        val activeFile = activeProfileFile(localVersion.directory)
         if (activeFile.isFile && activeFile.readText(Charsets.UTF_8).trim() == profileId) {
             val fallback = profiles.first { it.id != profileId }
-            writeActiveProfile(localVersion.profileDirectory, fallback.id)
+            writeActiveProfile(localVersion.directory, fallback.id)
         }
     }
 
     /**
-     * Stores an opaque ZIP backup in the selected profile. It validates the archive
-     * structure and hashes the bytes, but does not apply them to the running game.
+     * Stores an opaque ZIP backup in this instance's backups/ directory. It validates
+     * archive paths and size limits but does not apply the archive to the running game.
      */
     fun importGameDataBackup(
         version: String,
         profileId: String,
         input: InputStream
     ): GameProfileRecord {
-        val profile = findProfile(
-            versionStorageManager.ensureVersion(version, "Geometry Dash $version").profileDirectory,
-            profileId
-        )
-        val temporary = File.createTempFile("game-data-", ".part", profile.directory)
-        val target = File(profile.directory, BACKUP_FILE_NAME)
+        val instance = findProfile(version, profileId)
+        val backupsDirectory = File(instance.directory, BACKUPS_DIRECTORY)
+        ensureDirectory(backupsDirectory)
+        val temporary = File.createTempFile("game-data-", ".part", backupsDirectory)
+        val target = File(backupsDirectory, BACKUP_FILE_NAME)
         val digest = MessageDigest.getInstance("SHA-256")
         var copied = 0L
         try {
@@ -214,46 +235,47 @@ class GameProfileManager(
             validateZip(temporary)
             moveReplacing(temporary, target)
 
-            val metadata = readMetadata(profile.directory) ?: error("No se pudo leer el perfil.")
+            val metadata = readMetadata(instance.directory) ?: error("No se pudo leer la instancia.")
             val updated = metadata.copy(
                 updatedAtEpochMillis = currentTimeMillis(),
-                gameDataBackupFileName = BACKUP_FILE_NAME,
+                gameDataBackupFileName = BACKUP_RELATIVE_PATH,
                 gameDataBackupSizeBytes = copied,
                 gameDataBackupSha256 = digest.digest().toHexString()
             )
-            writeMetadata(profile.directory, updated)
-            return toRecord(profile.directory, updated)
+            writeMetadata(instance.directory, updated)
+            return toRecord(instance.directory, updated)
         } finally {
             temporary.delete()
         }
     }
 
     fun exportGameDataBackup(version: String, profileId: String, output: OutputStream) {
-        val profile = findProfile(
-            versionStorageManager.ensureVersion(version, "Geometry Dash $version").profileDirectory,
-            profileId
-        )
-        val backup = File(profile.directory, BACKUP_FILE_NAME)
-        require(backup.isFile) { "Este perfil todavía no contiene un archivo de respaldo." }
+        val instance = findProfile(version, profileId)
+        val backup = File(instance.directory, BACKUP_RELATIVE_PATH)
+        require(backup.isFile) { "Esta instancia todavía no contiene un archivo de respaldo." }
         FileInputStream(backup).use { input -> input.copyTo(output) }
         output.flush()
     }
 
-    private fun findProfile(profileDirectory: File, profileId: String): GameProfileRecord {
-        require(PROFILE_ID_PATTERN.matches(profileId)) { "El ID del perfil no es válido." }
-        return listProfilesFromRoot(profilesRoot(profileDirectory))
+    private fun findProfile(version: String, profileId: String): GameProfileRecord {
+        require(PROFILE_ID_PATTERN.matches(profileId)) { "El ID de la instancia no es válido." }
+        return listProfiles(version)
             .firstOrNull { it.id == profileId }
-            ?: throw IllegalArgumentException("El perfil seleccionado no existe.")
+            ?: throw IllegalArgumentException("La instancia seleccionada no existe.")
     }
 
-    private fun listProfilesFromRoot(root: File): List<GameProfileRecord> {
+    private fun listProfilesFromRoot(version: String): List<GameProfileRecord> {
+        val root = versionStorageManager.instancesDirectory
         if (!root.isDirectory) return emptyList()
         return root.listFiles().orEmpty()
             .asSequence()
-            .filter { it.isDirectory && PROFILE_ID_PATTERN.matches(it.name) }
+            .filter { it.isDirectory && it.name.startsWith("v") }
             .mapNotNull { directory ->
                 val metadata = readMetadata(directory) ?: return@mapNotNull null
-                if (metadata.id != directory.name) return@mapNotNull null
+                if (metadata.version != version ||
+                    metadata.id != directory.name.substringAfter("--", missingDelimiterValue = "") ||
+                    directory.name != instanceStorageId(version, metadata.id)
+                ) return@mapNotNull null
                 toRecord(directory, metadata)
             }
             .sortedWith(compareBy<GameProfileRecord> { it.createdAtEpochMillis }.thenBy { it.name })
@@ -261,32 +283,121 @@ class GameProfileManager(
     }
 
     private fun readMetadata(directory: File): GameProfileMetadata? {
-        val file = File(directory, PROFILE_METADATA_FILE)
+        val file = File(directory, INSTANCE_METADATA_FILE)
         if (!file.isFile || file.length() > MAX_METADATA_BYTES) return null
         return runCatching {
             file.bufferedReader(Charsets.UTF_8).use {
                 gson.fromJson(it, GameProfileMetadata::class.java)
             }
         }.getOrNull()?.takeIf {
-            it.schemaVersion == PROFILE_SCHEMA_VERSION &&
+            it.schemaVersion == INSTANCE_SCHEMA_VERSION &&
+                it.version != null &&
+                VERSION_PATTERN.matches(it.version) &&
                 PROFILE_ID_PATTERN.matches(it.id) &&
                 it.name.isNotBlank() &&
-                (it.gameDataBackupFileName == null || it.gameDataBackupFileName == BACKUP_FILE_NAME)
+                (it.gameDataBackupFileName == null ||
+                    it.gameDataBackupFileName == BACKUP_RELATIVE_PATH)
         }
+    }
+
+    private fun readLegacyMetadata(directory: File): GameProfileMetadata? {
+        val file = File(directory, LEGACY_METADATA_FILE)
+        if (!file.isFile || file.length() > MAX_METADATA_BYTES) return null
+        return runCatching {
+            file.bufferedReader(Charsets.UTF_8).use {
+                gson.fromJson(it, GameProfileMetadata::class.java)
+            }
+        }.getOrNull()?.takeIf {
+            it.schemaVersion == LEGACY_PROFILE_SCHEMA_VERSION &&
+                PROFILE_ID_PATTERN.matches(it.id) &&
+                it.id == directory.name &&
+                it.name.isNotBlank() &&
+                (it.gameDataBackupFileName == null || it.gameDataBackupFileName == LEGACY_BACKUP_FILE_NAME)
+        }
+    }
+
+    /**
+     * One-time, non-destructive migration from versions/<version>/profile/profiles.
+     * The old files are retained until the user chooses to clean them up, so a failed
+     * migration cannot erase an older profile or its backup.
+     */
+    private fun migrateLegacyProfiles(version: String, legacyProfileDirectory: File) {
+        val legacyRoot = File(legacyProfileDirectory, LEGACY_PROFILES_DIRECTORY)
+        if (!legacyRoot.isDirectory) return
+        ensureDirectory(versionStorageManager.instancesDirectory)
+
+        legacyRoot.listFiles().orEmpty()
+            .asSequence()
+            .filter { it.isDirectory && PROFILE_ID_PATTERN.matches(it.name) }
+            .forEach { legacyDirectory ->
+                val legacyMetadata = readLegacyMetadata(legacyDirectory) ?: return@forEach
+                val target = instanceDirectory(version, legacyMetadata.id)
+                if (target.exists()) {
+                    val current = readMetadata(target)
+                    check(current?.version == version && current.id == legacyMetadata.id) {
+                        "Existe una carpeta de instancia incompatible; no se modificó para proteger sus datos."
+                    }
+                    return@forEach
+                }
+
+                val temporary = File(
+                    versionStorageManager.instancesDirectory,
+                    ".migration-" + instanceStorageId(version, legacyMetadata.id)
+                )
+                if (temporary.exists()) temporary.deleteRecursively()
+                ensureDirectory(temporary)
+
+                try {
+                    val legacyApk = File(legacyDirectory, INSTANCE_APK_FILE_NAME)
+                    if (legacyApk.isFile) {
+                        Files.copy(legacyApk.toPath(), File(temporary, INSTANCE_APK_FILE_NAME).toPath())
+                    }
+
+                    val legacyBackup = File(legacyDirectory, LEGACY_BACKUP_FILE_NAME)
+                    val backupDirectory = File(temporary, BACKUPS_DIRECTORY)
+                    if (legacyBackup.isFile) {
+                        ensureDirectory(backupDirectory)
+                        Files.copy(
+                            legacyBackup.toPath(),
+                            File(backupDirectory, BACKUP_FILE_NAME).toPath()
+                        )
+                    }
+
+                    val migratedMetadata = legacyMetadata.copy(
+                        schemaVersion = INSTANCE_SCHEMA_VERSION,
+                        version = version,
+                        gameDataBackupFileName = if (legacyBackup.isFile) BACKUP_RELATIVE_PATH else null
+                    )
+                    writeMetadata(temporary, migratedMetadata)
+                    try {
+                        Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                    } catch (_: Exception) {
+                        Files.move(temporary.toPath(), target.toPath())
+                    }
+                } catch (error: Exception) {
+                    temporary.deleteRecursively()
+                    throw IllegalStateException(
+                        "No se pudo migrar la instancia antigua ${legacyMetadata.name}; los archivos anteriores se conservaron.",
+                        error
+                    )
+                }
+            }
     }
 
     private fun writeMetadata(directory: File, metadata: GameProfileMetadata) {
         ensureDirectory(directory)
-        val target = File(directory, PROFILE_METADATA_FILE)
-        val temporary = File(directory, "$PROFILE_METADATA_FILE.tmp")
+        require(metadata.version != null && VERSION_PATTERN.matches(metadata.version))
+        val target = File(directory, INSTANCE_METADATA_FILE)
+        val temporary = File(directory, "$INSTANCE_METADATA_FILE.tmp")
         temporary.writeText(gson.toJson(metadata), Charsets.UTF_8)
         moveReplacing(temporary, target)
     }
 
     private fun toRecord(directory: File, metadata: GameProfileMetadata): GameProfileRecord {
-        val backup = File(directory, BACKUP_FILE_NAME)
+        val backup = File(directory, BACKUP_RELATIVE_PATH)
         return GameProfileRecord(
             id = metadata.id,
+            version = metadata.version ?: "",
             name = metadata.name,
             directory = directory,
             createdAtEpochMillis = metadata.createdAtEpochMillis,
@@ -297,13 +408,16 @@ class GameProfileManager(
         )
     }
 
-    private fun profilesRoot(profileDirectory: File) = File(profileDirectory, "profiles")
-    private fun activeProfileFile(profileDirectory: File) = File(profileDirectory, "active-profile.txt")
+    private fun instanceDirectory(version: String, profileId: String): File =
+        File(versionStorageManager.instancesDirectory, instanceStorageId(version, profileId))
 
-    private fun writeActiveProfile(profileDirectory: File, profileId: String) {
+    private fun activeProfileFile(versionDirectory: File) =
+        File(versionDirectory, ACTIVE_PROFILE_FILE)
+
+    private fun writeActiveProfile(versionDirectory: File, profileId: String) {
         require(PROFILE_ID_PATTERN.matches(profileId))
-        val target = activeProfileFile(profileDirectory)
-        val temporary = File(profileDirectory, "active-profile.tmp")
+        val target = activeProfileFile(versionDirectory)
+        val temporary = File(versionDirectory, "$ACTIVE_PROFILE_FILE.tmp")
         temporary.writeText(profileId, Charsets.UTF_8)
         moveReplacing(temporary, target)
     }
@@ -346,15 +460,15 @@ class GameProfileManager(
     private fun normalizeName(value: String): String =
         value.trim().also {
             require(it.isNotEmpty() && it.length <= MAX_PROFILE_NAME_LENGTH) {
-                "El nombre del perfil debe tener entre 1 y $MAX_PROFILE_NAME_LENGTH caracteres."
+                "El nombre de la instancia debe tener entre 1 y $MAX_PROFILE_NAME_LENGTH caracteres."
             }
         }
 
     private fun ensureDirectory(directory: File) {
         if (!directory.exists()) {
-            check(directory.mkdirs()) { "No se pudo crear el directorio del perfil." }
+            check(directory.mkdirs()) { "No se pudo crear el directorio de la instancia." }
         }
-        check(directory.isDirectory) { "La ruta del perfil no es un directorio." }
+        check(directory.isDirectory) { "La ruta de la instancia no es un directorio." }
     }
 
     private fun moveReplacing(source: File, target: File) {
@@ -374,11 +488,17 @@ class GameProfileManager(
         joinToString("") { byte -> "%02x".format(byte) }
 
     companion object {
-        private const val PROFILE_SCHEMA_VERSION = 1
-        private const val PROFILE_METADATA_FILE = "profile.json"
-        private const val DEFAULT_PROFILE_ID = "default"
-        private const val DEFAULT_PROFILE_NAME = "Predeterminado"
+        private const val INSTANCE_SCHEMA_VERSION = 2
+        private const val LEGACY_PROFILE_SCHEMA_VERSION = 1
+        private const val INSTANCE_METADATA_FILE = "instance.json"
+        private const val LEGACY_METADATA_FILE = "profile.json"
+        private const val LEGACY_PROFILES_DIRECTORY = "profiles"
+        private const val ACTIVE_PROFILE_FILE = "active-profile.txt"
+        private const val INSTANCE_APK_FILE_NAME = "instance.apk"
+        private const val BACKUPS_DIRECTORY = "backups"
         private const val BACKUP_FILE_NAME = "game-data.zip"
+        private const val BACKUP_RELATIVE_PATH = "backups/game-data.zip"
+        private const val LEGACY_BACKUP_FILE_NAME = "game-data.zip"
         private const val MAX_METADATA_BYTES = 64 * 1024L
         private const val MAX_BACKUP_BYTES = 512L * 1024L * 1024L
         private const val MAX_UNCOMPRESSED_BACKUP_BYTES = 1024L * 1024L * 1024L
