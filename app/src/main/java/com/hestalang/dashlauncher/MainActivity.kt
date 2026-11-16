@@ -65,6 +65,8 @@ import com.hestalang.dashlauncher.download.DownloadProviderRegistry
 import com.hestalang.dashlauncher.download.DownloadResolution
 import com.hestalang.dashlauncher.download.DownloadStatus
 import com.hestalang.dashlauncher.download.DownloadVerification
+import com.hestalang.dashlauncher.storage.VersionStorageManager
+import com.hestalang.dashlauncher.storage.VersionStorageSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -271,6 +273,22 @@ private fun BottomBarItem(
 private fun VersionsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val repository = remember(context) { RemoteVersionCatalogRepository(context) }
+    val storageManager = remember(context) { VersionStorageManager(context) }
+
+    var storageRefreshCount by rememberSaveable { mutableIntStateOf(0) }
+    var storageSnapshot by remember { mutableStateOf<VersionStorageSnapshot?>(null) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(storageManager, storageRefreshCount) {
+        runCatching {
+            withContext(Dispatchers.IO) { storageManager.initialize() }
+        }.onSuccess { snapshot ->
+            storageSnapshot = snapshot
+            storageError = null
+        }.onFailure { error ->
+            storageError = error.message ?: "No se pudo inicializar el almacenamiento local."
+        }
+    }
 
     var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
     var searchText by rememberSaveable { mutableStateOf("") }
@@ -316,6 +334,12 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        LocalVersionStorageCard(
+            snapshot = storageSnapshot,
+            error = storageError,
+            onRefresh = { storageRefreshCount++ }
+        )
+
         OutlinedTextField(
             value = searchText,
             onValueChange = { searchText = it },
@@ -405,11 +429,101 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             else -> filteredVersions.forEach { version ->
                 CatalogVersionCard(
                     record = version,
-                    repository = repository
+                    repository = repository,
+                    onApkStored = { storageRefreshCount++ }
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun LocalVersionStorageCard(
+    snapshot: VersionStorageSnapshot?,
+    error: String?,
+    onRefresh: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Almacenamiento local",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Carpeta común para todas las versiones de Geometry Dash",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Button(onClick = onRefresh, enabled = snapshot != null) {
+                    Text("Escanear")
+                }
+            }
+
+            when {
+                error != null -> Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                snapshot == null -> Text(
+                    "Preparando la carpeta de versiones…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> {
+                    Text(
+                        snapshot.rootDirectory.absolutePath,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (snapshot.versions.isEmpty()) {
+                            "Carpeta lista. Todavía no hay APK guardados."
+                        } else {
+                            snapshot.versions.size.toString() + " versión(es) en el almacenamiento local."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    snapshot.versions.forEach { localVersion ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    localVersion.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    localVersion.directory.name + " • " +
+                                        if (localVersion.hasApk) "APK guardado" else "Perfil preparado; APK pendiente",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -464,7 +578,8 @@ private fun ChannelSelector(
 @Composable
 private fun CatalogVersionCard(
     record: CatalogVersionRecord,
-    repository: RemoteVersionCatalogRepository
+    repository: RemoteVersionCatalogRepository,
+    onApkStored: () -> Unit
 ) {
     var expanded by rememberSaveable(record.id) { mutableStateOf(false) }
     var metadata by remember(record.id) { mutableStateOf<CatalogVersionMetadata?>(null) }
@@ -630,7 +745,7 @@ private fun CatalogVersionCard(
                                 ).resolve(entry)
                             }
                         }
-                        VersionDownloadAction(resolution)
+                        VersionDownloadAction(resolution, onApkStored)
                     }
                 }
             }
@@ -723,8 +838,12 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun VersionDownloadAction(resolution: DownloadResolution) {
+private fun VersionDownloadAction(
+    resolution: DownloadResolution,
+    onApkStored: () -> Unit
+) {
     val context = LocalContext.current
+    val storageManager = remember(context) { VersionStorageManager(context) }
 
     if (resolution is DownloadResolution.OpenExternalPage) {
         Button(
@@ -791,7 +910,29 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
                         is DownloadVerification.Verified -> {
                             isVerified = true
                             verifiedUriString = verification.uri.toString()
-                            statusMessage = "APK verificado: SHA-256, paquete, certificado y ABI coinciden. Android todavía debe confirmar la instalación o actualización."
+                            try {
+                                val storedVersion = withContext(Dispatchers.IO) {
+                                    val source = context.contentResolver.openInputStream(verification.uri)
+                                        ?: throw IllegalStateException("No se pudo abrir el APK verificado para guardarlo.")
+                                    storageManager.storeVerifiedApk(
+                                        version = item.versionLabel,
+                                        displayName = "Geometry Dash " + item.versionLabel,
+                                        input = source,
+                                        expectedSizeBytes = item.expectedSizeBytes,
+                                        expectedSha256 = item.expectedSha256,
+                                        packageName = item.expectedPackageName,
+                                        signingCertificateSha256 = item.expectedSigningCertificateSha256
+                                    )
+                                }
+                                onApkStored()
+                                statusMessage = "APK verificado y guardado en " +
+                                    storedVersion.apkFile.absolutePath +
+                                    ". Android todavía debe confirmar la instalación."
+                            } catch (error: Exception) {
+                                statusMessage = "El APK fue verificado, pero no se pudo guardar en versions/: " +
+                                    (error.message ?: "error de almacenamiento") +
+                                    ". Todavía puedes instalarlo desde la descarga verificada."
+                            }
                         }
                         is DownloadVerification.Rejected -> {
                             statusMessage = verification.reason
