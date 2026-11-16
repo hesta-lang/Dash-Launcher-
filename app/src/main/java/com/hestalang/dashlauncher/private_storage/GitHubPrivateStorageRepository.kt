@@ -227,15 +227,61 @@ class GitHubPrivateStorageRepository(context: Context) {
     }
 
     private fun requestApi(url: String, token: String, accept: String): String {
-        val connection = openApiConnection(url, token, accept)
-        try {
-            val code = connection.responseCode
-            if (code !in 200..299) throw IOException(httpErrorMessage(code))
-            return connection.inputStream.use { readLimited(it, MAX_CATALOG_BYTES) }
-        } finally {
-            connection.disconnect()
+        var lastNetworkError: IOException? = null
+
+        repeat(API_RETRY_ATTEMPTS) { attempt ->
+            var connection: HttpURLConnection? = null
+            try {
+                connection = openApiConnection(url, token, accept)
+                val code = connection.responseCode
+                if (code !in 200..299) throw GitHubHttpException(code)
+                return connection.inputStream.use { readLimited(it, MAX_CATALOG_BYTES) }
+            } catch (error: GitHubHttpException) {
+                throw IOException(error.message, error)
+            } catch (error: IOException) {
+                if (!isTransientNetworkFailure(error) || attempt == API_RETRY_ATTEMPTS - 1) {
+                    throw IOException(
+                        "No se pudo completar la conexión segura con GitHub. " +
+                            "La conexión se interrumpió durante la lectura; comprueba tu red e inténtalo de nuevo.",
+                        error
+                    )
+                }
+                lastNetworkError = error
+                try {
+                    Thread.sleep(API_RETRY_DELAY_MS * (attempt + 1))
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("Se canceló la consulta del almacenamiento privado.", interrupted)
+                }
+            } finally {
+                connection?.disconnect()
+            }
         }
+
+        throw IOException(
+            "GitHub interrumpió la conexión después de varios intentos.",
+            lastNetworkError
+        )
     }
+
+    private fun isTransientNetworkFailure(error: IOException): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            val message = current.message.orEmpty().lowercase()
+            if (current is java.net.SocketException ||
+                current is java.net.SocketTimeoutException ||
+                current is javax.net.ssl.SSLException ||
+                message.contains("ssl=") ||
+                message.contains("connection abort") ||
+                message.contains("connection reset") ||
+                message.contains("unexpected end of stream")
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private class GitHubHttpException(code: Int) : IOException(httpErrorMessage(code))
 
     private fun openApiConnection(
         url: String,
@@ -258,6 +304,8 @@ class GitHubPrivateStorageRepository(context: Context) {
             setRequestProperty("Accept", accept)
             setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             setRequestProperty("User-Agent", "DashLauncher-Android")
+            setRequestProperty("Connection", "close")
+            setRequestProperty("Cache-Control", "no-cache")
         }
     }
 
@@ -326,8 +374,10 @@ class GitHubPrivateStorageRepository(context: Context) {
         private const val API_BASE = "https://api.github.com"
         private const val CATALOG_PATH = "catalog/versions.json"
         private const val TOKEN_PREFIX = "github_pat_"
-        private const val CONNECT_TIMEOUT_MS = 20_000
-        private const val READ_TIMEOUT_MS = 30_000
+        private const val CONNECT_TIMEOUT_MS = 30_000
+        private const val READ_TIMEOUT_MS = 45_000
+        private const val API_RETRY_ATTEMPTS = 3
+        private const val API_RETRY_DELAY_MS = 500L
         private const val ASSET_READ_TIMEOUT_MS = 90_000
         private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
     }
