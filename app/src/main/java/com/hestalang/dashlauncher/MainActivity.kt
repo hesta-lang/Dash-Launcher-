@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -757,6 +758,7 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
     var progressPercent by remember(artifact?.fileName) { mutableIntStateOf(0) }
     var statusMessage by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
     var isVerified by rememberSaveable(artifact?.fileName) { mutableStateOf(false) }
+    var verifiedUriString by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(downloadId, artifact) {
         val id = downloadId ?: return@LaunchedEffect
@@ -781,14 +783,15 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
 
             when (snapshot.status) {
                 DownloadStatus.COMPLETED -> {
-                    statusMessage = "Verificando tamaño y SHA-256…"
+                    statusMessage = "Verificando tamaño, SHA-256, paquete, firma y ABI…"
                     val verification = withContext(Dispatchers.IO) {
                         coordinator.verifyCompletedDownload(id, item)
                     }
                     when (verification) {
                         is DownloadVerification.Verified -> {
                             isVerified = true
-                            statusMessage = "APK verificado: SHA-256, paquete, certificado y ABI coinciden. El archivo está guardado en Dash Launcher; todavía no se ha instalado."
+                            verifiedUriString = verification.uri.toString()
+                            statusMessage = "APK verificado: SHA-256, paquete, certificado y ABI coinciden. Android todavía debe confirmar la instalación o actualización."
                         }
                         is DownloadVerification.Rejected -> {
                             statusMessage = verification.reason
@@ -854,6 +857,47 @@ private fun VersionDownloadAction(resolution: DownloadResolution) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+
+        if (isVerified && !verifiedUriString.isNullOrBlank()) {
+            Button(
+                onClick = {
+                    val apkUri = Uri.parse(verifiedUriString)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        !context.packageManager.canRequestPackageInstalls()
+                    ) {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + context.packageName)
+                                )
+                            )
+                        }.onSuccess {
+                            statusMessage = "Autoriza a Dash Launcher para instalar aplicaciones y vuelve a pulsar Instalar / actualizar."
+                        }.onFailure {
+                            statusMessage = "No se pudo abrir el permiso de instalación de Android."
+                        }
+                    } else {
+                        runCatching {
+                            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE)
+                                .setDataAndType(
+                                    apkUri,
+                                    "application/vnd.android.package-archive"
+                                )
+                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            context.startActivity(installIntent)
+                        }.onSuccess {
+                            statusMessage = "Se abrió el instalador de Android. Revisa que el paquete y la versión sean correctos y confirma la actualización."
+                        }.onFailure { error ->
+                            statusMessage = error.message ?: "No se pudo abrir el instalador de Android."
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Instalar / actualizar")
+            }
         }
 
         statusMessage?.let { message ->
