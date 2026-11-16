@@ -717,10 +717,24 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
         val id = activeDownloadId ?: return@LaunchedEffect
         var fallbackVerificationScheduled = false
         while (true) {
-            val snapshot = withContext(Dispatchers.IO) { downloadManager.value.query(id) }
-            val active = withContext(Dispatchers.IO) { downloadManager.value.activeDownload() }
+            val stateResult = withContext(Dispatchers.IO) {
+                runCatching {
+                    downloadManager.value.query(id) to downloadManager.value.activeDownload()
+                }
+            }
+            if (stateResult.isFailure) {
+                statusMessage = "No se pudo consultar una descarga activa: " +
+                    (stateResult.exceptionOrNull()?.message ?: "error del gestor de Android")
+                downloading = null
+                activeDownloadId = null
+                isVerifyingDownload = false
+                break
+            }
+            val (snapshot, active) = stateResult.getOrThrow()
             if (active?.id != id) {
-                statusMessage = withContext(Dispatchers.IO) { downloadManager.value.resultMessage() }
+                statusMessage = withContext(Dispatchers.IO) {
+                    runCatching { downloadManager.value.resultMessage() }.getOrNull()
+                }
                 if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
                 downloading = null
                 activeDownloadId = null
@@ -737,14 +751,23 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                     DownloadManager.STATUS_FAILED -> {
                         isVerifyingDownload = true
                         if (!fallbackVerificationScheduled) {
-                            withContext(Dispatchers.IO) {
-                                downloadManager.value.scheduleVerification(id)
+                            val scheduled = withContext(Dispatchers.IO) {
+                                runCatching { downloadManager.value.scheduleVerification(id) }
+                            }
+                            if (scheduled.isFailure) {
+                                statusMessage = "No se pudo iniciar la verificación del APK: " +
+                                    (scheduled.exceptionOrNull()?.message ?: "error de WorkManager")
+                                downloading = null
+                                activeDownloadId = null
+                                isVerifyingDownload = false
+                                break
                             }
                             fallbackVerificationScheduled = true
                         }
-                        statusMessage = withContext(Dispatchers.IO) {
-                            downloadManager.value.verificationStage(id)
-                        } ?: if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) {
+                        val verificationStage = withContext(Dispatchers.IO) {
+                            runCatching { downloadManager.value.verificationStage(id) }.getOrNull()
+                        }
+                        statusMessage = verificationStage ?: if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) {
                             "Descarga completa. Esperando que comience la verificación…"
                         } else {
                             "Descarga terminada con error. Comprobando el resultado…"
