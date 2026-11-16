@@ -320,6 +320,26 @@ async function login(request: Request, env: Env): Promise<Response> {
   return Response.redirect(authorize.toString(), 302);
 }
 
+async function revokeGitHubUserToken(env: Env, accessToken: string): Promise<void> {
+  const credentials = btoa(env.GITHUB_OAUTH_CLIENT_ID + ":" + env.GITHUB_OAUTH_CLIENT_SECRET);
+  const response = await fetch(
+    GITHUB_API + "/applications/" + encodeURIComponent(env.GITHUB_OAUTH_CLIENT_ID) + "/token",
+    {
+      method: "DELETE",
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "Authorization": "Basic " + credentials,
+        "X-GitHub-Api-Version": API_VERSION,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ access_token: accessToken })
+    }
+  );
+  if (response.status !== 204) {
+    throw new Error("The temporary GitHub user token could not be revoked.");
+  }
+}
+
 async function oauthCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get("code") || "";
@@ -356,15 +376,23 @@ async function oauthCallback(request: Request, env: Env): Promise<Response> {
   const githubUserToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
   if (!githubUserToken) return html("<h2>Dash Launcher</h2><p>GitHub no devolvió una sesión de usuario válida.</p>", 502);
 
-  const userResponse = await fetch("https://api.github.com/user", {
-    headers: {
-      "Accept": "application/vnd.github+json",
-      "Authorization": "Bearer " + githubUserToken,
-      "X-GitHub-Api-Version": API_VERSION
+  let user: JsonObject;
+  try {
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "Authorization": "Bearer " + githubUserToken,
+        "X-GitHub-Api-Version": API_VERSION
+      }
+    });
+    if (!userResponse.ok) {
+      return html("<h2>Dash Launcher</h2><p>No se pudo verificar la cuenta de GitHub.</p>", 502);
     }
-  });
-  if (!userResponse.ok) return html("<h2>Dash Launcher</h2><p>No se pudo verificar la cuenta de GitHub.</p>", 502);
-  const user = await userResponse.json() as JsonObject;
+    user = await userResponse.json() as JsonObject;
+  } finally {
+    // The OAuth token is needed only for /user. Revoke it before issuing our own session.
+    await revokeGitHubUserToken(env, githubUserToken);
+  }
   const username = typeof user.login === "string" ? user.login : "";
   if (!username || !allowedUsers(env).has(username.toLowerCase())) {
     return html("<h2>Dash Launcher</h2><p>Esta cuenta de GitHub no tiene autorización para el almacenamiento privado de Dash Launcher.</p>", 403);
