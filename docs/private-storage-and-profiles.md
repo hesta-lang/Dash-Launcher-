@@ -1,20 +1,42 @@
 # Private storage and per-version profiles
 
-## Private GitHub storage
+## Private GitHub storage through the Dash Launcher backend
 
-The launcher connects to the private repository `hesta-lang/Dash-Launcher-Private-Storage` through the GitHub REST API.
+Dash Launcher no longer asks users to paste a Fine-grained Personal Access Token.
+The Android app signs in through the system browser using the Dash Launcher GitHub
+App. A Cloudflare Worker validates the GitHub identity and accesses the private
+storage repository through a GitHub App installation.
 
-Create a **fine-grained personal access token** with:
-- Resource owner: `hesta-lang`
-- Repository access: only `Dash-Launcher-Private-Storage`
-- Repository permission: `Contents: Read-only`
-- A short expiration appropriate for the device
+The backend lives in `backend/cloudflare-worker/`. Its setup, GitHub App
+permissions, Cloudflare secrets, and deployment instructions are documented in
+[the backend README](../backend/cloudflare-worker/README.md).
 
-Do not use a classic token with broad `repo` access. The token is entered in Dash Launcher settings, validated against the configured private repository, then encrypted at rest with an AES/GCM key held in Android Keystore. The app sends it only to `api.github.com`. For release downloads, the app follows GitHub's temporary HTTPS asset redirect without forwarding the token to the redirected host.
+### Credential boundaries
 
-The private catalog is `catalog/versions.json`. Each entry pins the release tag, asset name, exact size, SHA-256, package, signer fingerprint, ABIs and provenance warning. For an APK download, Dash Launcher requests a fresh, short-lived signed asset URL from GitHub's API, then hands that URL (without the GitHub token) to Android `DownloadManager`. Android owns the transfer and its system notification, so the download can continue after Dash Launcher is backgrounded or its process is reclaimed. A manifest receiver schedules a WorkManager task after completion; that task rechecks the exact file size, SHA-256, package, signing certificate and ABI before copying the APK to `versions/<version>/game.apk`. An incomplete or mismatched APK is never promoted into local version storage.
+- The GitHub App private key, OAuth client secret, and GitHub installation access
+  tokens exist only in Cloudflare Worker secrets and server memory.
+- The Worker creates an installation token limited to
+  `Dash-Launcher-Private-Storage` and `Contents: read`.
+- The OAuth callback checks PKCE and an explicit allowlist of GitHub usernames.
+  The initial allowlist contains only `hesta-lang`.
+- Android receives a short-lived Dash Launcher session, not a GitHub token. It
+  stores that session encrypted with AES/GCM using a key held in Android Keystore.
+- The session expires after seven days. The user must reconnect through GitHub
+  when it expires or is revoked.
+- The backend validates the catalog entry against its GitHub Release before it
+  returns a temporary asset URL. The Android app does not forward its session to
+  the GitHub asset host.
 
-The 2.2091 APK currently listed in the private catalog has a valid Android signature, but its certificate has **not** been verified as the official RobTop signing certificate. The launcher preserves that warning and checks the exact pinned certificate fingerprint; it does not label the APK official.
+The Worker URL is configured in
+`app/src/main/java/com/hestalang/dashlauncher/private_storage/DashBackendConfiguration.kt`.
+The placeholder URL must be replaced with the deployed Worker URL before building
+a usable Android release. Never place GitHub credentials in that file or any
+other Android source file.
+
+The 2.2091 APK currently listed in the private catalog has a valid Android
+signature, but its certificate has **not** been verified as the official RobTop
+signing certificate. The launcher preserves that warning and checks the exact
+pinned certificate fingerprint; it does not label the APK official.
 
 ## Profile layout
 
