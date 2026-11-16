@@ -162,6 +162,51 @@ class CatalogJsonParserTest {
     }
 
     @Test
+    fun acceptsExternalProviderPageWithoutClaimingAbiCompatibility() {
+        val json = """
+            {
+              "id": "gd-2.2081-arm64",
+              "description": "External provider reference.",
+              "platform": "android",
+              "minAndroidApi": 26,
+              "supportedAbis": [],
+              "artifact": {
+                "provider": "external-page",
+                "providerName": "Uoldown",
+                "url": "https://uoldown.com/android/geometry-dash/download/12595"
+              }
+            }
+        """.trimIndent()
+
+        val metadata = CatalogJsonParser.parseMetadata(json, record)
+        assertEquals(emptyList<String>(), metadata.supportedAbis)
+        assertEquals("external-page", metadata.artifact?.providerId)
+        assertEquals("Uoldown", metadata.artifact?.providerName)
+    }
+
+    @Test
+    fun rejectsExternalProviderOutsideAllowlist() {
+        val json = """
+            {
+              "id": "gd-2.2081-arm64",
+              "description": "External provider reference.",
+              "platform": "android",
+              "minAndroidApi": 26,
+              "supportedAbis": [],
+              "artifact": {
+                "provider": "external-page",
+                "providerName": "Unknown",
+                "url": "https://example.com/download"
+              }
+            }
+        """.trimIndent()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            CatalogJsonParser.parseMetadata(json, record)
+        }
+    }
+
+    @Test
     fun rejectsUnsupportedAbi() {
         val json = """
             {
