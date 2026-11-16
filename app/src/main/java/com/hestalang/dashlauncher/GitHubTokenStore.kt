@@ -122,5 +122,5 @@ object GitHubPrivateStorageAccess {
     }
 
     private const val REPOSITORY_API_URL =
-        "https://api.github.com/repos/hesta-lang/Dash-Launcher-Private-Storage"
+        "https://api.github.com/repos/hesta-lang/Dash-Launcher-Private-Storage/contents/catalog/versions.json?ref=main"
 }
