@@ -35,11 +35,9 @@ class ProfileApkClonerInstrumentedTest {
         assertTrue("El APK original fixture no está instalado o no se puede leer.", sourceApk.isFile && sourceApk.canRead())
         val originalSourceHash = sha256(sourceApk)
 
-        val workDirectory = File(
-            context.getExternalFilesDir(null)
-                ?: error("El emulador no proporcionó almacenamiento externo de la aplicación."),
-            VALIDATION_DIRECTORY
-        )
+        // Keep the validation APK in internal app storage so CI can retrieve it
+        // reliably with adb run-as, independent of external-storage mount behavior.
+        val workDirectory = File(context.filesDir, VALIDATION_DIRECTORY)
         assertTrue(
             "No se pudo preparar la carpeta de validación.",
             workDirectory.isDirectory || workDirectory.mkdirs()
