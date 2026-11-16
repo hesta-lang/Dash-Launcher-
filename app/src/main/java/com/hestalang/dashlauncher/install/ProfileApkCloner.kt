@@ -11,6 +11,9 @@ import com.reandroid.arsc.chunk.xml.ResXmlAttribute
 import com.reandroid.arsc.chunk.xml.ResXmlElement
 import com.reandroid.arsc.value.ValueType
 import java.io.File
+import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -49,8 +52,8 @@ class ProfileApkCloner {
         }
 
         val sourcePackage = readPackageName(sourceApk)
-        require(sourcePackage.isNotBlank()) {
-            "El APK no declara un identificador de paquete válido."
+        require(sourcePackage == GeometryDashInstallManager.GAME_PACKAGE) {
+            "El APK de origen no corresponde al paquete de Geometry Dash esperado: " + sourcePackage
         }
         require(sourcePackage != newPackageName) {
             "El identificador nuevo coincide con el del APK original."
@@ -87,6 +90,9 @@ class ProfileApkCloner {
                 module.writeApk(unsigned)
             }
 
+            require(readPackageName(unsigned) == newPackageName) {
+                "El identificador del manifiesto no cambió como se esperaba."
+            }
             signAndVerify(unsigned, signed)
             moveReplacing(signed, outputApk)
 
@@ -262,8 +268,10 @@ class ProfileApkCloner {
                     !(entry.name.matches(DEX_ENTRY) || entry.name.endsWith(".so"))
                 ) continue
                 if (entry.size <= 0L || entry.size > MAX_SCAN_ENTRY_BYTES) continue
-                val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                if (contains(bytes, needle) || contains(bytes, slashNeedle)) {
+                val found = zip.getInputStream(entry).use { input ->
+                    containsAny(input, listOf(needle, slashNeedle))
+                }
+                if (found) {
                     warnings += if (entry.name.endsWith(".so")) {
                         "Se detectó el paquete original dentro de " + entry.name +
                             "; una biblioteca nativa podría esperar la identidad original."
@@ -277,19 +285,55 @@ class ProfileApkCloner {
         return warnings.distinct()
     }
 
-    private fun contains(haystack: ByteArray, needle: ByteArray): Boolean {
-        if (needle.isEmpty() || haystack.size < needle.size) return false
-        for (start in 0..(haystack.size - needle.size)) {
+    /**
+     * Streams a DEX/native entry instead of reading a large library into memory on the phone.
+     * A short overlap preserves matches that cross a 64 KiB read boundary.
+     */
+    private fun containsAny(input: InputStream, needles: List<ByteArray>): Boolean {
+        val validNeedles = needles.filter { it.isNotEmpty() }
+        if (validNeedles.isEmpty()) return false
+        val overlapCapacity = (validNeedles.maxOf { it.size } - 1).coerceAtLeast(0)
+        val overlap = ByteArray(overlapCapacity)
+        var overlapLength = 0
+        val buffer = ByteArray(64 * 1024)
+
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return false
+            if (read == 0) continue
+
+            val combined = ByteArray(overlapLength + read)
+            System.arraycopy(overlap, 0, combined, 0, overlapLength)
+            System.arraycopy(buffer, 0, combined, overlapLength, read)
+
+            if (validNeedles.any { indexOf(combined, it) >= 0 }) return true
+
+            overlapLength = minOf(overlapCapacity, combined.size)
+            if (overlapLength > 0) {
+                System.arraycopy(
+                    combined,
+                    combined.size - overlapLength,
+                    overlap,
+                    0,
+                    overlapLength
+                )
+            }
+        }
+    }
+
+    private fun indexOf(source: ByteArray, target: ByteArray): Int {
+        if (target.isEmpty() || source.size < target.size) return -1
+        for (start in 0..(source.size - target.size)) {
             var matches = true
-            for (offset in needle.indices) {
-                if (haystack[start + offset] != needle[offset]) {
+            for (offset in target.indices) {
+                if (source[start + offset] != target[offset]) {
                     matches = false
                     break
                 }
             }
-            if (matches) return true
+            if (matches) return start
         }
-        return false
+        return -1
     }
 
     private fun launcherActivities(
@@ -344,11 +388,19 @@ class ProfileApkCloner {
                 "No se pudo crear la carpeta de salida."
             }
         }
-        if (target.exists() && !target.delete()) {
-            throw IllegalStateException("No se pudo reemplazar el APK de esta instancia.")
-        }
-        check(source.renameTo(target)) {
-            "No se pudo guardar el APK de la instancia."
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: Exception) {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING
+            )
         }
     }
 
