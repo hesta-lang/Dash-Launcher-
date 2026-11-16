@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
 import android.os.Bundle
@@ -81,6 +83,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
+
+private fun formatDownloadMegabytes(bytes: Long): Long =
+    bytes.coerceAtLeast(0L) / (1024L * 1024L)
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
@@ -565,6 +570,10 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     var isRefreshing by remember { mutableStateOf(false) }
     var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
     var downloading by remember { mutableStateOf<PrivateVersionInfo?>(null) }
+    var downloadedBytes by remember { mutableStateOf(0L) }
+    var downloadTotalBytes by remember { mutableStateOf(0L) }
+    var isVerifyingDownload by remember { mutableStateOf(false) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -595,10 +604,19 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     LaunchedEffect(downloading, token) {
         val selected = downloading ?: return@LaunchedEffect
         val accessToken = token ?: return@LaunchedEffect
-        statusMessage = "Descargando y verificando ${selected.displayName}…"
+        downloadedBytes = 0L
+        downloadTotalBytes = selected.sizeBytes
+        isVerifyingDownload = false
+        statusMessage = "Descargando ${selected.displayName}…"
         runCatching {
             withContext(Dispatchers.IO) {
-                val temporary = repository.downloadAndVerify(accessToken, selected)
+                val temporary = repository.downloadAndVerify(accessToken, selected) { downloaded, total ->
+                    mainHandler.post {
+                        downloadedBytes = downloaded
+                        downloadTotalBytes = total
+                    }
+                }
+                mainHandler.post { isVerifyingDownload = true }
                 try {
                     storageManager.storeVerifiedApk(
                         version = selected.version,
@@ -620,6 +638,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
             statusMessage = it.message ?: "No se pudo descargar la versión privada."
         }
         downloading = null
+        isVerifyingDownload = false
     }
 
     Card(
@@ -688,13 +707,40 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                             }
                             Text(item.warning, style = MaterialTheme.typography.bodySmall)
                             Button(
-                                onClick = { downloading = item },
+                                onClick = {
+                                    downloadedBytes = 0L
+                                    downloadTotalBytes = item.sizeBytes
+                                    isVerifyingDownload = false
+                                    downloading = item
+                                },
                                 enabled = downloading == null &&
                                     Build.VERSION.SDK_INT >= item.minAndroidApi &&
                                     item.supportedAbis.any { Build.SUPPORTED_ABIS.contains(it) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(if (downloading?.id == item.id) "Descargando…" else "Descargar y guardar")
+                            }
+                            if (downloading?.id == item.id) {
+                                val fraction = if (downloadTotalBytes > 0L) {
+                                    (downloadedBytes.toFloat() / downloadTotalBytes.toFloat()).coerceIn(0f, 1f)
+                                } else {
+                                    0f
+                                }
+                                LinearProgressIndicator(
+                                    progress = fraction,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    "${formatDownloadMegabytes(downloadedBytes)} MB / ${formatDownloadMegabytes(downloadTotalBytes)} MB",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    if (isVerifyingDownload) "Descarga completa. Verificando el APK…"
+                                    else "Descargando…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
