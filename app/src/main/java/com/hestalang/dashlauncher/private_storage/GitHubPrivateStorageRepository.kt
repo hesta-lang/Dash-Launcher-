@@ -122,61 +122,13 @@ class GitHubPrivateStorageRepository(context: Context) {
         cacheDirectory.mkdirs()
         val temporaryFile = File.createTempFile("dash-private-", ".apk.part", cacheDirectory)
         try {
-            val apiUrl = "$API_BASE/repos/$REPOSITORY/releases/assets/$assetId"
-            val apiConnection = openApiConnection(
-                url = apiUrl,
+            downloadAssetWithRetry(
                 token = token,
-                accept = "application/octet-stream"
+                assetId = assetId,
+                version = version,
+                destination = temporaryFile,
+                onProgress = onProgress
             )
-            val responseCode = apiConnection.responseCode
-            val input = when (responseCode) {
-                HttpURLConnection.HTTP_OK -> apiConnection.inputStream
-                HttpURLConnection.HTTP_MOVED_TEMP,
-                HttpURLConnection.HTTP_MOVED_PERM,
-                HttpURLConnection.HTTP_SEE_OTHER,
-                307,
-                308 -> {
-                    val location = apiConnection.getHeaderField("Location")
-                        ?: throw IOException("GitHub no proporcionó la URL temporal del APK.")
-                    apiConnection.disconnect()
-                    openSignedAsset(location)
-                }
-                else -> {
-                    apiConnection.disconnect()
-                    throw IOException(httpErrorMessage(responseCode))
-                }
-            }
-
-            val digest = MessageDigest.getInstance("SHA-256")
-            var copiedBytes = 0L
-            onProgress(0L, version.sizeBytes)
-            input.use { source ->
-                FileOutputStream(temporaryFile).use { target ->
-                    val buffer = ByteArray(32 * 1024)
-                    while (true) {
-                        val count = source.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) continue
-                        copiedBytes += count
-                        require(copiedBytes <= version.sizeBytes) {
-                            "La descarga supera el tamaño permitido."
-                        }
-                        digest.update(buffer, 0, count)
-                        target.write(buffer, 0, count)
-                        onProgress(copiedBytes, version.sizeBytes)
-                    }
-                    target.fd.sync()
-                }
-            }
-            apiConnection.disconnect()
-
-            require(copiedBytes == version.sizeBytes) {
-                "El tamaño descargado no coincide con el manifiesto privado."
-            }
-            val actualHash = digest.digest().toHexString()
-            require(actualHash.equals(version.sha256, ignoreCase = true)) {
-                "El SHA-256 del APK no coincide con el manifiesto privado."
-            }
             onVerifying()
             verifyApk(temporaryFile, version)
             return temporaryFile
@@ -185,6 +137,122 @@ class GitHubPrivateStorageRepository(context: Context) {
             throw error
         }
     }
+
+    /**
+     * Downloads the asset from the beginning on each retry. A fresh signed redirect URL
+     * is requested every time; partial bytes are discarded and never appended to a new
+     * response. SHA-256 and exact length are checked before returning.
+     */
+    private fun downloadAssetWithRetry(
+        token: String,
+        assetId: Long,
+        version: PrivateVersionInfo,
+        destination: File,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit
+    ) {
+        var lastNetworkError: IOException? = null
+
+        repeat(ASSET_RETRY_ATTEMPTS) { attempt ->
+            var apiConnection: HttpURLConnection? = null
+            var assetConnection: HttpURLConnection? = null
+            try {
+                val apiUrl = "$API_BASE/repos/$REPOSITORY/releases/assets/$assetId"
+                apiConnection = openApiConnection(
+                    url = apiUrl,
+                    token = token,
+                    accept = "application/octet-stream"
+                )
+
+                val responseCode = apiConnection.responseCode
+                assetConnection = when (responseCode) {
+                    HttpURLConnection.HTTP_OK -> apiConnection
+                    HttpURLConnection.HTTP_MOVED_TEMP,
+                    HttpURLConnection.HTTP_MOVED_PERM,
+                    HttpURLConnection.HTTP_SEE_OTHER,
+                    307,
+                    308 -> {
+                        val location = apiConnection.getHeaderField("Location")
+                            ?: throw IOException("GitHub no proporcionó la URL temporal del APK.")
+                        apiConnection.disconnect()
+                        apiConnection = null
+                        openSignedAssetConnection(location)
+                    }
+                    in 500..599 -> throw java.net.SocketException(
+                        "GitHub respondió HTTP $responseCode al iniciar la descarga del APK."
+                    )
+                    else -> throw GitHubHttpException(httpErrorMessage(responseCode))
+                }
+
+                val digest = MessageDigest.getInstance("SHA-256")
+                var copiedBytes = 0L
+                onProgress(0L, version.sizeBytes)
+                assetConnection.inputStream.use { source ->
+                    FileOutputStream(destination, false).use { target ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            copiedBytes += count
+                            if (copiedBytes > version.sizeBytes) {
+                                throw IOException("La descarga supera el tamaño permitido.")
+                            }
+                            digest.update(buffer, 0, count)
+                            target.write(buffer, 0, count)
+                            onProgress(copiedBytes, version.sizeBytes)
+                        }
+                        target.fd.sync()
+                    }
+                }
+
+                if (copiedBytes != version.sizeBytes) {
+                    throw IncompleteAssetException(
+                        "La conexión terminó antes de recibir el APK completo."
+                    )
+                }
+
+                val actualHash = digest.digest().toHexString()
+                require(actualHash.equals(version.sha256, ignoreCase = true)) {
+                    "El SHA-256 del APK no coincide con el manifiesto privado."
+                }
+                return
+            } catch (error: IncompleteAssetException) {
+                lastNetworkError = error
+                if (attempt == ASSET_RETRY_ATTEMPTS - 1) {
+                    throw IOException(
+                        "La descarga del APK se interrumpió incluso después de varios intentos.",
+                        error
+                    )
+                }
+            } catch (error: GitHubHttpException) {
+                throw IOException(error.message, error)
+            } catch (error: IOException) {
+                if (!isTransientNetworkFailure(error) || attempt == ASSET_RETRY_ATTEMPTS - 1) {
+                    throw IOException(
+                        "No se pudo completar la descarga segura del APK. " +
+                            "La conexión se interrumpió; se agotaron los intentos disponibles.",
+                        error
+                    )
+                }
+                lastNetworkError = error
+            } finally {
+                assetConnection?.disconnect()
+                if (apiConnection !== assetConnection) apiConnection?.disconnect()
+            }
+
+            onProgress(0L, version.sizeBytes)
+            try {
+                Thread.sleep(ASSET_RETRY_DELAY_MS * (attempt + 1))
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IOException("Se canceló la descarga del APK.", interrupted)
+            }
+        }
+
+        throw IOException("GitHub interrumpió la descarga después de varios intentos.", lastNetworkError)
+    }
+
+    private class IncompleteAssetException(message: String) : IOException(message)
 
     private fun verifyApk(file: File, version: PrivateVersionInfo) {
         val packageInfo = appContext.packageManager.getPackageArchiveInfo(
@@ -317,7 +385,7 @@ class GitHubPrivateStorageRepository(context: Context) {
         }
     }
 
-    private fun openSignedAsset(location: String): java.io.InputStream {
+    private fun openSignedAssetConnection(location: String): HttpURLConnection {
         val uri = URI(location)
         val allowedHosts = setOf(
             "release-assets.githubusercontent.com",
@@ -336,13 +404,20 @@ class GitHubPrivateStorageRepository(context: Context) {
             useCaches = false
             setRequestProperty("Accept", "application/octet-stream")
             setRequestProperty("User-Agent", "DashLauncher-Android")
+            setRequestProperty("Connection", "close")
+            setRequestProperty("Cache-Control", "no-cache")
         }
         val code = connection.responseCode
         if (code !in 200..299) {
             connection.disconnect()
+            if (code in 500..599) {
+                throw java.net.SocketException(
+                    "El servidor temporal del APK respondió HTTP $code."
+                )
+            }
             throw IOException("El servidor temporal del APK respondió HTTP $code.")
         }
-        return connection.inputStream
+        return connection
     }
 
     private fun validateTokenFormat(token: String) {
@@ -386,6 +461,8 @@ class GitHubPrivateStorageRepository(context: Context) {
         private const val READ_TIMEOUT_MS = 45_000
         private const val API_RETRY_ATTEMPTS = 3
         private const val API_RETRY_DELAY_MS = 500L
+        private const val ASSET_RETRY_ATTEMPTS = 3
+        private const val ASSET_RETRY_DELAY_MS = 1_000L
         private const val ASSET_READ_TIMEOUT_MS = 90_000
         private const val MAX_CATALOG_BYTES = 2 * 1024 * 1024
     }
