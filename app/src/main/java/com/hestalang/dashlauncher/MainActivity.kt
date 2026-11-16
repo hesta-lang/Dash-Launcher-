@@ -610,14 +610,19 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
         statusMessage = "Descargando ${selected.displayName}…"
         runCatching {
             withContext(Dispatchers.IO) {
-                val temporary = repository.downloadAndVerify(accessToken, selected) { downloaded, total ->
-                    mainHandler.post {
-                        downloadedBytes = downloaded
-                        downloadTotalBytes = total
+                val temporary = repository.downloadAndVerify(
+                    token = accessToken,
+                    version = selected,
+                    onProgress = { downloaded, total ->
+                        mainHandler.post {
+                            downloadedBytes = downloaded
+                            downloadTotalBytes = total
+                        }
+                    },
+                    onVerifying = {
+                        mainHandler.post { isVerifyingDownload = true }
                     }
-                }, onVerifying = {
-                    mainHandler.post { isVerifyingDownload = true }
-                })
+                )
                 try {
                     storageManager.storeVerifiedApk(
                         version = selected.version,
