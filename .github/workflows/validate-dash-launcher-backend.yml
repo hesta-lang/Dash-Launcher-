@@ -1,0 +1,34 @@
+name: Validate Dash Launcher private-storage backend
+
+on:
+  push:
+    branches:
+      - feature/private-storage-profiles
+    paths:
+      - "backend/cloudflare-worker/**"
+      - ".github/workflows/validate-dash-launcher-backend.yml"
+  pull_request:
+    paths:
+      - "backend/cloudflare-worker/**"
+      - ".github/workflows/validate-dash-launcher-backend.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Bundle Worker with Wrangler
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Validate Worker bundle without deploying
+        run: npx --yes wrangler@4 deploy --dry-run
+        working-directory: backend/cloudflare-worker
