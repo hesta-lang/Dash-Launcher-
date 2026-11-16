@@ -493,6 +493,8 @@ class GameProfileManager(
         joinToString("") { byte -> "%02x".format(byte) }
 
     companion object {
+        private const val DEFAULT_PROFILE_ID = "default"
+        private const val DEFAULT_PROFILE_NAME = "Predeterminado"
         private const val INSTANCE_SCHEMA_VERSION = 2
         private const val LEGACY_PROFILE_SCHEMA_VERSION = 1
         private const val INSTANCE_METADATA_FILE = "instance.json"
