@@ -59,11 +59,6 @@ class ApkDownloadCoordinator(context: Context) {
         }
 
         val request = DownloadManager.Request(Uri.parse(artifact.url))
-            .apply {
-                artifact.authorizationToken?.takeIf { it.isNotBlank() }?.let { token ->
-                    addRequestHeader("Authorization", "Bearer $token")
-                }
-            }
             .setTitle("Geometry Dash")
             .setDescription("Descargando " + artifact.versionLabel)
             .setMimeType("application/vnd.android.package-archive")
