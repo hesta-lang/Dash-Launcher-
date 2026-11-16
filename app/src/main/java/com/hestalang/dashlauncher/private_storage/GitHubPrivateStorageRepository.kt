@@ -139,6 +139,91 @@ class GitHubPrivateStorageRepository(context: Context) {
     }
 
     /**
+     * Resolves a private Release asset into a short-lived, signed HTTPS URL.
+     * The GitHub token is used only for api.github.com and is never passed to DownloadManager.
+     */
+    fun resolveDownloadUrl(token: String, version: PrivateVersionInfo): String {
+        validateTokenFormat(token)
+        val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name())
+        val releaseJson = requestApi(
+            url = "$API_BASE/repos/$REPOSITORY/releases/tags/$encodedTag",
+            token = token,
+            accept = "application/vnd.github+json"
+        )
+        val release = JsonParser.parseString(releaseJson).asJsonObject
+        require(release.get("tag_name")?.asString == version.tag) {
+            "La Release privada no coincide con la etiqueta declarada."
+        }
+        require(release.get("draft")?.asBoolean == false) {
+            "La Release privada todavía está marcada como borrador."
+        }
+        val assets = release.getAsJsonArray("assets")
+            ?: throw IOException("La Release privada no contiene archivos.")
+        val asset = assets.firstOrNull { item ->
+            item.isJsonObject && item.asJsonObject.get("name")?.asString == version.assetName
+        }?.asJsonObject ?: throw IOException("No se encontró el APK esperado en la Release privada.")
+        val assetId = asset.get("id")?.asLong
+            ?: throw IOException("GitHub no devolvió el ID del asset.")
+        require(asset.get("size")?.asLong == version.sizeBytes) {
+            "El tamaño del asset de GitHub no coincide con el manifiesto privado."
+        }
+        val remoteDigest = asset.get("digest")
+            ?.takeIf { !it.isJsonNull }?.asString?.removePrefix("sha256:")
+        if (!remoteDigest.isNullOrBlank()) {
+            require(remoteDigest.equals(version.sha256, ignoreCase = true)) {
+                "El digest publicado por GitHub no coincide con el manifiesto privado."
+            }
+        }
+
+        val connection = openApiConnection(
+            url = "$API_BASE/repos/$REPOSITORY/releases/assets/$assetId",
+            token = token,
+            accept = "application/octet-stream"
+        )
+        try {
+            val code = connection.responseCode
+            require(code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                code == HttpURLConnection.HTTP_MOVED_PERM ||
+                code == HttpURLConnection.HTTP_SEE_OTHER ||
+                code == 307 || code == 308) {
+                if (code in 200..299) "GitHub no proporcionó una URL temporal de descarga."
+                else httpErrorMessage(code)
+            }
+            val location = connection.getHeaderField("Location")
+                ?: throw IOException("GitHub no proporcionó la URL temporal del APK.")
+            val uri = URI(location)
+            val allowedHosts = setOf("release-assets.githubusercontent.com", "objects.githubusercontent.com")
+            require(uri.scheme.equals("https", ignoreCase = true) &&
+                uri.host?.lowercase() in allowedHosts && uri.userInfo == null) {
+                "GitHub redirigió el APK a un dominio temporal no permitido."
+            }
+            return location
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /** Validates a DownloadManager file before it can be copied into versions/. */
+    fun verifyDownloadedApk(file: File, version: PrivateVersionInfo) {
+        require(file.isFile && file.length() == version.sizeBytes) {
+            "El tamaño del APK descargado no coincide con el catálogo privado."
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) digest.update(buffer, 0, count)
+            }
+        }
+        require(digest.digest().toHexString().equals(version.sha256, ignoreCase = true)) {
+            "El SHA-256 del APK no coincide con el manifiesto privado."
+        }
+        verifyApk(file, version)
+    }
+
+    /**
      * Downloads the asset from the beginning on each retry. A fresh signed redirect URL
      * is requested every time; partial bytes are discarded and never appended to a new
      * response. SHA-256 and exact length are checked before returning.
