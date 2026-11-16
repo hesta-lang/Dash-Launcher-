@@ -90,8 +90,8 @@ class GameProfileManager(
         // 2.2-alpha and 2.2+alpha must never collapse to the same installed package.
         val versionToken = version.toByteArray(Charsets.UTF_8)
             .joinToString("") { byte -> "%02x".format(byte) }
-        val profileToken = profileId.lowercase()
-            .replace(Regex("[^a-z0-9_]"), "")
+        val profileToken = profileId.toByteArray(Charsets.UTF_8)
+            .joinToString("") { byte -> "%02x".format(byte) }
         return "com.hestalang.dashlauncher.gd.v" + versionToken + ".p" + profileToken
     }
 
