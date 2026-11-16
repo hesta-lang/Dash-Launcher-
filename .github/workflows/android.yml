@@ -76,11 +76,9 @@ jobs:
             adb install -r app/build/outputs/apk/debug/app-debug.apk
 
             PROFILE_DIR="/sdcard/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation"
-            adb shell mkdir -p "$PROFILE_DIR"
-            adb push profilefixture/build/outputs/apk/debug/profilefixture-debug.apk "$PROFILE_DIR/source-fixture.apk"
 
-            # The instrumented test invokes the actual app cloner and checks the
-            # generated manifest, signing, retained launcher activity, and source hash.
+            # The instrumented test reads the installed source APK, runs the real cloner,
+            # checks the generated manifest/signature, and verifies the original APK hash.
             adb logcat -c
             gradle :app:connectedDebugAndroidTest
 
