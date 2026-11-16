@@ -1,10 +1,8 @@
 package com.hestalang.dashlauncher.private_storage
 
+import com.hestalang.dashlauncher.security.ApkSignerCertificateReader
+
 import android.content.Context
-import android.content.pm.PackageInfo
-import android.content.pm.PackageManager
-import android.content.pm.Signature
-import android.os.Build
 import android.util.Base64
 import com.google.gson.JsonParser
 import java.io.File
@@ -180,23 +178,23 @@ class GitHubPrivateStorageRepository(context: Context) {
     }
 
     private fun verifyApk(file: File, version: PrivateVersionInfo) {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
-        } else {
-            @Suppress("DEPRECATION")
-            PackageManager.GET_SIGNATURES
-        }
-        val packageInfo = appContext.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
-            ?: throw IOException("El archivo descargado no es un APK Android válido.")
+        val packageInfo = appContext.packageManager.getPackageArchiveInfo(
+            file.absolutePath,
+            0
+        ) ?: throw IOException("El archivo descargado no es un APK Android válido.")
         require(packageInfo.packageName == version.packageName) {
             "El APK declara un paquete distinto al esperado."
         }
 
-        val signatures = currentSignatures(packageInfo)
-        require(signatures.isNotEmpty()) { "No se pudo leer el certificado de firma del APK." }
-        val signerHashes = signatures.map { signature ->
+        val certificates = ApkSignerCertificateReader.readCertificates(
+            appContext,
+            file,
+            packageInfo
+        )
+        require(certificates.isNotEmpty()) { "El APK no contiene un certificado de firma legible." }
+        val signerHashes = certificates.map { certificate ->
             MessageDigest.getInstance("SHA-256")
-                .digest(signature.toByteArray())
+                .digest(certificate)
                 .toHexString()
         }
         require(signerHashes.any {
@@ -226,14 +224,6 @@ class GitHubPrivateStorageRepository(context: Context) {
             "Esta versión requiere Android API ${version.minAndroidApi} o superior."
         }
     }
-
-    private fun currentSignatures(packageInfo: PackageInfo): List<Signature> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            packageInfo.signingInfo?.apkContentsSigners?.toList().orEmpty()
-        } else {
-            @Suppress("DEPRECATION")
-            packageInfo.signatures?.toList().orEmpty()
-        }
 
     private fun requestApi(url: String, token: String, accept: String): String {
         val connection = openApiConnection(url, token, accept)
