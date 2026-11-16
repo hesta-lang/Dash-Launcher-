@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DashLauncher"
-include(":app", ":baselineprofile")
+include(":app", ":baselineprofile", ":profilefixture")
