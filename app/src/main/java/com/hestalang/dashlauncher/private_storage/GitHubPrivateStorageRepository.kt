@@ -186,7 +186,7 @@ class GitHubPrivateStorageRepository(context: Context) {
                 val digest = MessageDigest.getInstance("SHA-256")
                 var copiedBytes = 0L
                 onProgress(0L, version.sizeBytes)
-                assetConnection.inputStream.use { source ->
+                assetConnection!!.inputStream.use { source ->
                     FileOutputStream(destination, false).use { target ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
