@@ -9,6 +9,14 @@ data class PreparedVersionInstallation(
     val warnings: List<String>
 )
 
+private val versionPattern =
+    Regex("^[0-9]+(?:\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+
+private fun versionToken(version: String): String =
+    version.lowercase(Locale.ROOT).map { char ->
+        if (char in 'a'..'z' || char in '0'..'9') char else '_'
+    }.joinToString("")
+
 /**
  * Creates one independently installable package for each catalog game version.
  * The verified source APK remains untouched in versions/<version>/game.apk.
@@ -24,13 +32,12 @@ class VersionInstallationManager(
         require(sourceApk.isFile && sourceApk.canRead()) {
             "No se encontró el APK original verificado de Geometry Dash $version."
         }
+        val packageName = packageNameForVersion(version)
         require(outputDirectory.isDirectory || outputDirectory.mkdirs()) {
             "No se pudo crear la carpeta de instalación de Geometry Dash $version."
         }
 
-        val packageName = packageNameForVersion(version)
-        val token = versionToken(version)
-        val outputApk = File(outputDirectory, "geometry-dash-$token.apk")
+        val outputApk = File(outputDirectory, "geometry-dash-${versionToken(version)}.apk")
         val result = cloner.build(
             sourceApk = sourceApk,
             outputApk = outputApk,
@@ -46,19 +53,11 @@ class VersionInstallationManager(
     }
 
     companion object {
-        private val VERSION_PATTERN =
-            Regex("^[0-9]+(?:\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
-
         fun packageNameForVersion(version: String): String {
-            require(version.length <= 32 && VERSION_PATTERN.matches(version)) {
+            require(version.length <= 32 && versionPattern.matches(version)) {
                 "El número de versión no es válido para crear una instalación independiente."
             }
             return "com.hestalang.dashlauncher.gd.v" + versionToken(version)
         }
-
-        private fun versionToken(version: String): String =
-            version.lowercase(Locale.ROOT).map { char ->
-                if (char in 'a'..'z' || char in '0'..'9') char else '_'
-            }.joinToString("")
     }
 }
