@@ -636,7 +636,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     val context = LocalContext.current
     val sessionStore = remember(context) { GitHubSessionStore(context) }
     val repository = remember(context) { GitHubPrivateStorageRepository(context) }
-    val downloadManager = remember(context) { PrivateApkDownloadManager(context) }
+    val downloadManager = remember(context) { lazy(LazyThreadSafetyMode.NONE) { PrivateApkDownloadManager(context) } }
     val downloadScope = androidx.compose.runtime.rememberCoroutineScope()
 
     var sessionToken by remember { mutableStateOf<String?>(null) }
@@ -688,14 +688,28 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
-        val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
-        if (active != null) {
-            downloading = active.version
-            activeDownloadId = active.id
-            statusMessage = "Descarga en curso: ${active.version.displayName}."
-        } else {
-            statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
-            if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
+        // Restoring DownloadManager state must never take down the first screen.
+        val restored = withContext(Dispatchers.IO) {
+            runCatching {
+                val active = downloadManager.value.activeDownload()
+                val message = if (active == null) downloadManager.value.resultMessage() else null
+                active to message
+            }
+        }
+        restored.onSuccess { (active, message) ->
+            if (active != null) {
+                downloading = active.version
+                activeDownloadId = active.id
+                statusMessage = "Descarga en curso: ${active.version.displayName}."
+            } else {
+                statusMessage = message
+                if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
+            }
+        }.onFailure { error ->
+            downloading = null
+            activeDownloadId = null
+            statusMessage = "No se pudo restaurar el estado de descargas: " +
+                (error.message ?: "error del gestor de Android")
         }
     }
 
@@ -703,10 +717,10 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
         val id = activeDownloadId ?: return@LaunchedEffect
         var fallbackVerificationScheduled = false
         while (true) {
-            val snapshot = withContext(Dispatchers.IO) { downloadManager.query(id) }
-            val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
+            val snapshot = withContext(Dispatchers.IO) { downloadManager.value.query(id) }
+            val active = withContext(Dispatchers.IO) { downloadManager.value.activeDownload() }
             if (active?.id != id) {
-                statusMessage = withContext(Dispatchers.IO) { downloadManager.resultMessage() }
+                statusMessage = withContext(Dispatchers.IO) { downloadManager.value.resultMessage() }
                 if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
                 downloading = null
                 activeDownloadId = null
@@ -724,12 +738,12 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                         isVerifyingDownload = true
                         if (!fallbackVerificationScheduled) {
                             withContext(Dispatchers.IO) {
-                                downloadManager.scheduleVerification(id)
+                                downloadManager.value.scheduleVerification(id)
                             }
                             fallbackVerificationScheduled = true
                         }
                         statusMessage = withContext(Dispatchers.IO) {
-                            downloadManager.verificationStage(id)
+                            downloadManager.value.verificationStage(id)
                         } ?: if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) {
                             "Descarga completa. Esperando que comience la verificación…"
                         } else {
@@ -824,7 +838,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                                         downloadScope.launch {
                                             runCatching {
                                                 withContext(Dispatchers.IO) {
-                                                    downloadManager.enqueue(accessToken, item)
+                                                    downloadManager.value.enqueue(accessToken, item)
                                                 }
                                             }.onSuccess { id ->
                                                 activeDownloadId = id
