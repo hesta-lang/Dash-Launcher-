@@ -24,6 +24,18 @@ Los APK solo se guardan después de superar las comprobaciones de integridad e i
 
 Consulta [la documentación del almacenamiento local](docs/local-version-storage.md) para conocer la ruta completa, el formato de metadatos y las limitaciones actuales.
 
+## Almacenamiento privado centralizado
+
+El acceso al repositorio privado se realiza mediante una GitHub App y un backend
+Cloudflare Worker. Dash Launcher inicia sesión en GitHub desde el navegador y
+recibe una sesión temporal; no requiere pegar un PAT ni incluye claves privadas
+de GitHub dentro del APK.
+
+Consulta [la configuración del backend](backend/cloudflare-worker/README.md) y
+[la arquitectura del almacenamiento privado](docs/private-storage-and-profiles.md).
+La integración requiere desplegar el Worker y configurar su URL en
+`DashBackendConfiguration.kt` antes de compilar una versión funcional.
+
 ## Instalaciones independientes por perfil
 
 La rama de desarrollo incorpora una primera implementación experimental para crear una instalación Android independiente por cada combinación de versión y perfil.
