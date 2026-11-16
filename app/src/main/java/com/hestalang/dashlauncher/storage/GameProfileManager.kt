@@ -86,9 +86,10 @@ class GameProfileManager(
         require(PROFILE_ID_PATTERN.matches(profileId)) {
             "El identificador del perfil no es válido."
         }
-        val versionToken = version.lowercase()
-            .replace(Regex("[^a-z0-9_]"), "_")
-            .trim('_')
+        // Hex-encode UTF-8 bytes instead of replacing punctuation with underscores:
+        // 2.2-alpha and 2.2+alpha must never collapse to the same installed package.
+        val versionToken = version.toByteArray(Charsets.UTF_8)
+            .joinToString("") { byte -> "%02x".format(byte) }
         val profileToken = profileId.lowercase()
             .replace(Regex("[^a-z0-9_]"), "")
         return "com.hestalang.dashlauncher.gd.v" + versionToken + ".p" + profileToken
