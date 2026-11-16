@@ -77,7 +77,8 @@ class GitHubPrivateStorageRepository(context: Context) {
     fun downloadAndVerify(
         token: String,
         version: PrivateVersionInfo,
-        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+        onVerifying: () -> Unit = {}
     ): File {
         validateTokenFormat(token)
         val encodedTag = URLEncoder.encode(version.tag, Charsets.UTF_8.name())
@@ -176,6 +177,7 @@ class GitHubPrivateStorageRepository(context: Context) {
             require(actualHash.equals(version.sha256, ignoreCase = true)) {
                 "El SHA-256 del APK no coincide con el manifiesto privado."
             }
+            onVerifying()
             verifyApk(temporaryFile, version)
             return temporaryFile
         } catch (error: Exception) {
