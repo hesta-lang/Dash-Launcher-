@@ -28,7 +28,9 @@ enum class InstallRequestResult {
 class GeometryDashInstallManager(context: Context) {
     private val appContext = context.applicationContext
     private val packageManager = appContext.packageManager
-    private val cloner = ProfileApkCloner()
+    // Keep APK parsing/signing libraries out of the cold-start path. They are only needed
+    // after the user explicitly creates or updates a profile installation.
+    private val cloner by lazy(LazyThreadSafetyMode.NONE) { ProfileApkCloner() }
 
     fun installedGameInfo(): InstalledGeometryDash? =
         installedPackageInfo(GAME_PACKAGE)
