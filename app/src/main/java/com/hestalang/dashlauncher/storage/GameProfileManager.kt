@@ -337,6 +337,12 @@ class GameProfileManager(
         }
     }
 
+    private fun validateVersion(version: String) {
+        require(VERSION_PATTERN.matches(version)) {
+            "El número de versión no es válido. Se esperaba un valor como 2.2081."
+        }
+    }
+
     private fun normalizeName(value: String): String =
         value.trim().also {
             require(it.isNotEmpty() && it.length <= MAX_PROFILE_NAME_LENGTH) {
@@ -378,6 +384,7 @@ class GameProfileManager(
         private const val MAX_UNCOMPRESSED_BACKUP_BYTES = 1024L * 1024L * 1024L
         private const val MAX_BACKUP_ENTRIES = 100_000
         private const val MAX_PROFILE_NAME_LENGTH = 32
+        private val VERSION_PATTERN = Regex("^[0-9]+(?:\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
         private val PROFILE_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
     }
 }
