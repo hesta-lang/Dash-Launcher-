@@ -289,14 +289,16 @@ class GameProfileManager(
             file.bufferedReader(Charsets.UTF_8).use {
                 gson.fromJson(it, GameProfileMetadata::class.java)
             }
-        }.getOrNull()?.takeIf {
-            it.schemaVersion == INSTANCE_SCHEMA_VERSION &&
-                it.version != null &&
-                VERSION_PATTERN.matches(it.version) &&
-                PROFILE_ID_PATTERN.matches(it.id) &&
-                it.name.isNotBlank() &&
-                (it.gameDataBackupFileName == null ||
-                    it.gameDataBackupFileName == BACKUP_RELATIVE_PATH)
+        }.getOrNull()?.takeIf { metadata ->
+            runCatching {
+                metadata.schemaVersion == INSTANCE_SCHEMA_VERSION &&
+                    metadata.version != null &&
+                    VERSION_PATTERN.matches(metadata.version) &&
+                    PROFILE_ID_PATTERN.matches(metadata.id) &&
+                    metadata.name.isNotBlank() &&
+                    (metadata.gameDataBackupFileName == null ||
+                        metadata.gameDataBackupFileName == BACKUP_RELATIVE_PATH)
+            }.getOrDefault(false)
         }
     }
 
@@ -307,12 +309,15 @@ class GameProfileManager(
             file.bufferedReader(Charsets.UTF_8).use {
                 gson.fromJson(it, GameProfileMetadata::class.java)
             }
-        }.getOrNull()?.takeIf {
-            it.schemaVersion == LEGACY_PROFILE_SCHEMA_VERSION &&
-                PROFILE_ID_PATTERN.matches(it.id) &&
-                it.id == directory.name &&
-                it.name.isNotBlank() &&
-                (it.gameDataBackupFileName == null || it.gameDataBackupFileName == LEGACY_BACKUP_FILE_NAME)
+        }.getOrNull()?.takeIf { metadata ->
+            runCatching {
+                metadata.schemaVersion == LEGACY_PROFILE_SCHEMA_VERSION &&
+                    PROFILE_ID_PATTERN.matches(metadata.id) &&
+                    metadata.id == directory.name &&
+                    metadata.name.isNotBlank() &&
+                    (metadata.gameDataBackupFileName == null ||
+                        metadata.gameDataBackupFileName == LEGACY_BACKUP_FILE_NAME)
+            }.getOrDefault(false)
         }
     }
 
