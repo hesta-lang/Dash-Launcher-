@@ -2,27 +2,38 @@
 
 Dash Launcher es un launcher para Android diseñado para organizar distintas versiones de Geometry Dash desde una sola aplicación.
 
-Permite explorar un catálogo de versiones, consultar sus metadatos, verificar APK descargados y conservar los archivos locales bajo un único directorio de almacenamiento. Cada versión guardada tiene su propio directorio y una carpeta reservada para su perfil.
+Permite explorar un catálogo de versiones, consultar sus metadatos, verificar APK descargados y conservar los archivos locales bajo una biblioteca común. Las versiones se guardan una sola vez; cada instancia mantiene su identidad, configuración y respaldos de forma independiente.
 
-## Almacenamiento local
+## Almacenamiento local estilo Prism Launcher
 
-Dash Launcher prepara una carpeta común:
+Dash Launcher separa los archivos compartidos de las instancias:
 
 ```text
-Android/data/com.hestalang.dashlauncher/files/versions/
-├── 2.2081/
-│   ├── game.apk
-│   ├── metadata.json
-│   └── profile/
-└── 2.2091/
-    ├── game.apk
-    ├── metadata.json
-    └── profile/
+files/
+├── versions/
+│   ├── 2.2081/
+│   │   ├── game.apk
+│   │   ├── metadata.json
+│   │   └── active-profile.txt
+│   └── 2.2091/
+│       ├── game.apk
+│       └── metadata.json
+├── instances/
+│   └── <version-token>--<instance-id>/
+│       ├── instance.json
+│       ├── instance.apk
+│       └── backups/
+│           └── game-data.zip
+└── cache/
 ```
 
-Los APK solo se guardan después de superar las comprobaciones de integridad e identidad configuradas en el catálogo. El almacenamiento es específico de la aplicación y no requiere permisos generales de archivos.
+- `versions/` es la biblioteca compartida: un APK base verificado por versión.
+- `instances/` contiene una carpeta por combinación de versión e instancia.
+- `instance.apk` es el artefacto con identidad Android propia que se instala para esa instancia.
+- Android mantiene un sandbox privado por paquete instalado.
+- `cache/` queda reservada para archivos temporales que pueden reconstruirse.
 
-Consulta [la documentación del almacenamiento local](docs/local-version-storage.md) para conocer la ruta completa, el formato de metadatos y las limitaciones actuales.
+Consulta [la documentación del almacenamiento local](docs/local-version-storage.md) para conocer las rutas, la migración del formato anterior y los límites actuales.
 
 ## Almacenamiento privado centralizado
 
@@ -36,26 +47,19 @@ Consulta [la configuración del backend](backend/cloudflare-worker/README.md) y
 La integración requiere desplegar el Worker y configurar su URL en
 `DashBackendConfiguration.kt` antes de compilar una versión funcional.
 
-## Instalaciones independientes por perfil
+## Instancias independientes
 
-La rama de desarrollo incorpora una primera implementación experimental para crear una instalación Android independiente por cada combinación de versión y perfil.
+La implementación experimental crea un paquete Android diferente para cada combinación de versión e instancia. La identidad de paquete se mantiene estable aunque se cambie el nombre visible. Al volver a instalar una instancia con la misma clave local, Android puede actualizar ese paquete y conservar sus datos.
 
-Cada instancia recibe un identificador de paquete propio, por ejemplo:
+El APK base compartido no se modifica. Dash Launcher genera `instance.apk` dentro de la carpeta de la instancia, actualiza el manifiesto y la tabla de recursos y firma el resultado con una clave persistente de Android Keystore. Android solicita la confirmación de instalación; Dash Launcher no desinstala automáticamente la aplicación original ni las otras instancias.
 
-```text
-com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74
-```
+La firma del clon no es la clave de RobTop. Mientras Dash Launcher conserve su clave de Android Keystore, las reconstrucciones de una misma instancia pueden actualizar el paquete ya instalado. Borrar los datos o desinstalar Dash Launcher puede eliminar esa clave; no se debe hacer mientras se dependa de actualizar instancias existentes.
 
-Dash Launcher prepara una copia del APK guardado, actualiza el identificador del manifiesto y de la tabla de recursos, ajusta las autoridades de proveedores y otros identificadores del manifiesto, y firma el resultado con una clave persistente del Android Keystore. Android instala esa copia como otra aplicación, sin reemplazar la instalación original ni las demás instancias. El instalador de Android sigue solicitando la confirmación del usuario.
+### Límites de esta fase
 
-La clave de firma del clon no es la clave de RobTop. Mientras Dash Launcher conserve su clave de Android Keystore, las reconstrucciones de una misma instancia pueden actualizar esa instalación y conservar sus datos. Borrar los datos o desinstalar Dash Launcher puede eliminar esa clave; no se debe hacer mientras se dependa de actualizar instancias ya instaladas.
-
-### Límites de esta primera fase
-
-- La reescritura cubre el manifiesto binario y el nombre del paquete en la tabla de recursos.
-- El análisis busca referencias al paquete original en archivos DEX y bibliotecas nativas y muestra advertencias. Todavía no reescribe esas referencias; algunas funciones podrían depender de ellas y fallar.
-- Cada paquete instalado tiene su propio sandbox de datos Android. Los archivos ZIP importados/exportados por el gestor de perfiles siguen siendo respaldos y todavía no se aplican automáticamente al progreso dentro del juego.
+- El análisis busca referencias al paquete original dentro de DEX y bibliotecas nativas, pero todavía no las reescribe. Algunas funciones podrían depender de esas referencias y fallar.
+- Cada paquete instalado tiene su propio sandbox Android. Los ZIP de `backups/` son respaldos opacos y todavía no restauran el progreso del juego.
+- Un fixture de CI valida el mecanismo de clonación, pero no garantiza que una versión real de Geometry Dash funcione al cambiar su identidad de paquete.
 - Los APK de origen se conservan sin modificar. Dash Launcher no ofrece ni redistribuye APK de Geometry Dash sin autorización.
 
-Esta funcionalidad está en validación en la rama `feature/private-storage-profiles`; que el APK generado supere la verificación de firma no garantiza que cada versión del juego arranque correctamente después de cambiar su identidad.
-
+La rama `feature/private-storage-profiles` contiene esta implementación experimental y su migración no destructiva desde el almacenamiento de perfiles anterior.
