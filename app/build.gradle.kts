@@ -30,10 +30,12 @@ android {
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Keep R8 out of the startup path until the minified Compose crash is
+            // diagnosed with a retraceable mapping. A stable launch takes priority
+            // over APK size; shrinking can be re-enabled after the release smoke test.
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
