@@ -83,7 +83,7 @@ jobs:
 
             # Retrieve the clone from app-specific external storage with adb pull.
             # This avoids copying binary APK bytes through run-as/stdout.
-            adb pull /sdcard/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
+            adb pull /storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
             test -s profile-instance-validation.apk
             {
               echo "Exported profile APK:"
