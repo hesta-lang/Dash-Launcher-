@@ -13,6 +13,7 @@ data class DownloadArtifact(
 
 sealed interface DownloadResolution {
     data class Available(val artifact: DownloadArtifact) : DownloadResolution
+    data class OpenExternalPage(val url: String, val providerName: String) : DownloadResolution
     data class Unavailable(val reason: String) : DownloadResolution
 }
 
@@ -72,6 +73,26 @@ class CatalogDirectDownloadProvider : DownloadProvider {
     }
 }
 
+/** Opens a provider's own product/version page; it never downloads an APK itself. */
+class ExternalCatalogPageProvider : DownloadProvider {
+    override val id: String = "external-page"
+
+    override fun resolve(version: VersionEntry): DownloadResolution {
+        if (version.providerId != id) {
+            return DownloadResolution.Unavailable(
+                "El proveedor '" + version.providerId + "' todavía no está integrado en Dash Launcher."
+            )
+        }
+        val url = version.downloadUrl
+            ?: return DownloadResolution.Unavailable("Esta versión no tiene una página externa configurada.")
+        val providerName = version.providerName?.takeIf { it.isNotBlank() }
+            ?: return DownloadResolution.Unavailable("Falta el nombre del proveedor externo.")
+        val error = DownloadArtifactValidator.externalPageValidationError(url)
+        if (error != null) return DownloadResolution.Unavailable(error)
+        return DownloadResolution.OpenExternalPage(url, providerName)
+    }
+}
+
 class DownloadProviderRegistry(providers: List<DownloadProvider>) {
     private val providersById = providers.associateBy { it.id }
 
@@ -84,6 +105,32 @@ class DownloadProviderRegistry(providers: List<DownloadProvider>) {
 
 object DownloadArtifactValidator {
     private val sha256Pattern = Regex("^[a-fA-F0-9]{64}$")
+
+    fun externalPageValidationError(url: String): String? {
+        if (url.isBlank() || url != url.trim()) {
+            return "La página del proveedor está vacía o contiene espacios no válidos."
+        }
+        val uri = try {
+            URI(url)
+        } catch (_: Exception) {
+            return "La página del proveedor no tiene un formato válido."
+        }
+        if (!uri.scheme.equals("https", ignoreCase = true) ||
+            uri.host.isNullOrBlank() || uri.rawUserInfo != null || uri.fragment != null) {
+            return "La página del proveedor debe ser una URL HTTPS válida."
+        }
+        val allowedHosts = setOf(
+            "play.google.com",
+            "uoldown.com",
+            "www.uoldown.com",
+            "apkcombo.com",
+            "www.apkcombo.com"
+        )
+        if (uri.host.lowercase() !in allowedHosts) {
+            return "El dominio de este proveedor todavía no está en la lista permitida."
+        }
+        return null
+    }
 
     fun validationError(
         url: String,
