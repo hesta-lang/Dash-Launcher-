@@ -234,7 +234,7 @@ class GitHubPrivateStorageRepository(context: Context) {
             try {
                 connection = openApiConnection(url, token, accept)
                 val code = connection.responseCode
-                if (code !in 200..299) throw GitHubHttpException(code)
+                if (code !in 200..299) throw GitHubHttpException(httpErrorMessage(code))
                 return connection.inputStream.use { readLimited(it, MAX_CATALOG_BYTES) }
             } catch (error: GitHubHttpException) {
                 throw IOException(error.message, error)
@@ -281,7 +281,7 @@ class GitHubPrivateStorageRepository(context: Context) {
         return false
     }
 
-    private class GitHubHttpException(code: Int) : IOException(httpErrorMessage(code))
+    private class GitHubHttpException(message: String) : IOException(message)
 
     private fun openApiConnection(
         url: String,
