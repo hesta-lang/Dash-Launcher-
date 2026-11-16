@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,6 +54,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.hestalang.dashlauncher.data.CatalogVersionMetadata
 import com.hestalang.dashlauncher.data.CatalogVersionRecord
@@ -73,6 +75,7 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
@@ -762,8 +765,18 @@ private fun SettingsScreen(
     selectedTheme: AppThemeOption,
     onThemeSelected: (AppThemeOption) -> Unit
 ) {
+    val context = LocalContext.current
+    val tokenStore = remember(context) { GitHubTokenStore(context) }
+    val scope = rememberCoroutineScope()
+    var tokenInput by remember { mutableStateOf("") }
+    var tokenSaved by remember { mutableStateOf(tokenStore.hasToken()) }
+    var checkingAccess by remember { mutableStateOf(false) }
+    var tokenStatus by remember { mutableStateOf<String?>(null) }
+
     Column(
-        modifier = modifier.padding(16.dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -773,7 +786,7 @@ private fun SettingsScreen(
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                "Configura el aspecto y el comportamiento de la aplicación.",
+                "Configura el aspecto y el acceso al almacenamiento privado.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -835,6 +848,121 @@ private fun SettingsScreen(
                         }
                     }
                 }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Almacenamiento privado de GitHub",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Conecta tu repositorio privado para que Dash Launcher pueda consultar las versiones que guardaste allí.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = { tokenInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Fine-grained personal access token") },
+                    placeholder = { Text("github_pat_…") },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Text(
+                    if (tokenSaved) "Token guardado de forma cifrada en este dispositivo." else "Todavía no hay un token guardado.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = {
+                        val candidate = tokenInput.trim()
+                        if (candidate.isBlank()) {
+                            tokenStatus = "Introduce el token antes de continuar."
+                        } else {
+                            runCatching { tokenStore.save(candidate) }
+                                .onSuccess {
+                                    tokenSaved = true
+                                    tokenInput = ""
+                                    tokenStatus = "Token guardado. Comprobando acceso al repositorio…"
+                                    checkingAccess = true
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) {
+                                            GitHubPrivateStorageAccess.check(tokenStore.read().orEmpty())
+                                        }
+                                        tokenStatus = result
+                                        checkingAccess = false
+                                    }
+                                }
+                                .onFailure { error ->
+                                    tokenStatus = error.message ?: "No se pudo guardar el token de forma segura."
+                                }
+                        }
+                    },
+                    enabled = tokenInput.isNotBlank() && !checkingAccess,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (checkingAccess) "Comprobando…" else "Guardar y comprobar acceso")
+                }
+                if (tokenSaved) {
+                    Button(
+                        onClick = {
+                            checkingAccess = true
+                            tokenStatus = "Comprobando acceso al repositorio…"
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    GitHubPrivateStorageAccess.check(tokenStore.read().orEmpty())
+                                }
+                                tokenStatus = result
+                                checkingAccess = false
+                            }
+                        },
+                        enabled = !checkingAccess,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Comprobar conexión")
+                    }
+                    Button(
+                        onClick = {
+                            tokenStore.clear()
+                            tokenSaved = false
+                            tokenInput = ""
+                            tokenStatus = "Token eliminado de este dispositivo."
+                        },
+                        enabled = !checkingAccess,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Eliminar token")
+                    }
+                }
+                tokenStatus?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.contains("correctamente", ignoreCase = true)) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                Text(
+                    "Permiso requerido en GitHub: Contents → Read-only para hesta-lang/Dash-Launcher-Private-Storage. No concedas permisos de escritura.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
