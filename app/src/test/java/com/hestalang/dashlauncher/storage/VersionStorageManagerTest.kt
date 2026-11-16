@@ -6,14 +6,14 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class VersionStorageManagerTest {
     @Test
-    fun createsSharedVersionLibraryAndSiblingInstanceRoot() {
-        val root = Files.createTempDirectory("dash-storage-").toFile()
+    fun createsOneFolderAndProfilePerVersion() {
+        val root = Files.createTempDirectory("dash-versions-").toFile()
         try {
             val manager = VersionStorageManager(root)
 
@@ -21,15 +21,10 @@ class VersionStorageManagerTest {
             val second = manager.ensureVersion("2.2091", "Geometry Dash 2.2091")
 
             assertTrue(root.isDirectory)
-            assertEquals(File(root, "versions"), manager.rootDirectory)
-            assertTrue(manager.rootDirectory.isDirectory)
-            assertEquals(File(root, "instances"), manager.instancesDirectory)
-            assertTrue(manager.instancesDirectory.isDirectory)
-            assertEquals(File(root, "cache"), manager.cacheDirectory)
-            assertTrue(manager.cacheDirectory.isDirectory)
             assertTrue(first.directory.isDirectory)
-            assertFalse(first.profileDirectory.exists())
+            assertTrue(first.profileDirectory.isDirectory)
             assertTrue(second.directory.isDirectory)
+            assertTrue(second.profileDirectory.isDirectory)
             assertTrue(File(first.directory, "metadata.json").isFile)
             assertTrue(File(second.directory, "metadata.json").isFile)
             assertFalse(first.directory == second.directory)
@@ -51,7 +46,7 @@ class VersionStorageManagerTest {
             assertThrows(IllegalArgumentException::class.java) {
                 manager.ensureVersion("2.2081/other", "Invalid version")
             }
-            assertFalse(File(root, "versions/../outside").exists())
+            assertFalse(File(root.parentFile, "outside").exists())
         } finally {
             root.deleteRecursively()
         }
@@ -83,7 +78,6 @@ class VersionStorageManagerTest {
                 stored.apkFile.readBytes().toList()
             )
             assertEquals("game.apk", stored.apkFile.name)
-            assertTrue(stored.apkFile.absolutePath.contains("/versions/2.2081/"))
         } finally {
             root.deleteRecursively()
         }
@@ -129,5 +123,5 @@ class VersionStorageManagerTest {
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256")
             .digest(bytes)
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { byte -> "%02x".format(byte) }
 }

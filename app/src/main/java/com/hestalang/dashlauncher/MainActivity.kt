@@ -2,15 +2,12 @@ package com.hestalang.dashlauncher
 
 import android.content.Context
 import android.content.Intent
-import android.app.DownloadManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -42,13 +39,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.hestalang.dashlauncher.install.GeometryDashInstallManager
-import com.hestalang.dashlauncher.install.InstallRequestResult
-import com.hestalang.dashlauncher.install.InstalledGeometryDash
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -63,14 +53,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.hestalang.dashlauncher.data.CatalogVersionMetadata
 import com.hestalang.dashlauncher.data.CatalogVersionRecord
 import com.hestalang.dashlauncher.data.RemoteVersionCatalogRepository
 import com.hestalang.dashlauncher.data.VersionEntry
+import com.hestalang.dashlauncher.install.GeometryDashInstallManager
+import com.hestalang.dashlauncher.install.VersionInstallationManager
 import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
 import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
 import com.hestalang.dashlauncher.download.ExternalCatalogPageProvider
@@ -80,19 +69,10 @@ import com.hestalang.dashlauncher.download.DownloadStatus
 import com.hestalang.dashlauncher.download.DownloadVerification
 import com.hestalang.dashlauncher.storage.VersionStorageManager
 import com.hestalang.dashlauncher.storage.VersionStorageSnapshot
-import com.hestalang.dashlauncher.storage.GameProfileManager
-import com.hestalang.dashlauncher.security.GitHubSessionStore
-import com.hestalang.dashlauncher.private_storage.GitHubPrivateStorageRepository
-import com.hestalang.dashlauncher.private_storage.PrivateVersionInfo
-import com.hestalang.dashlauncher.private_storage.GitHubOAuthPkce
-import com.hestalang.dashlauncher.private_storage.PrivateApkDownloadManager
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
-
-private fun formatDownloadMegabytes(bytes: Long): Long =
-    bytes.coerceAtLeast(0L) / (1024L * 1024L)
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
@@ -178,11 +158,7 @@ private fun DashLauncherApp(
                 title = {
                     Column {
                         Text(
-                            when (selectedDestination) {
-                                0 -> "Dash Launcher"
-                                1 -> "Perfiles"
-                                else -> "Configuración"
-                            },
+                            if (selectedDestination == 0) "Dash Launcher" else "Configuración",
                             fontWeight = FontWeight.Bold
                         )
                         if (selectedDestination == 0) {
@@ -205,7 +181,6 @@ private fun DashLauncherApp(
     ) { insets ->
         when (selectedDestination) {
             0 -> VersionsScreen(Modifier.fillMaxSize().padding(insets))
-            1 -> ProfilesScreen(Modifier.fillMaxSize().padding(insets))
             else -> SettingsScreen(
                 modifier = Modifier.fillMaxSize().padding(insets),
                 selectedTheme = selectedTheme,
@@ -240,17 +215,10 @@ private fun SimpleBottomBar(
             )
             BottomBarItem(
                 modifier = Modifier.weight(1f),
-                title = "Perfiles",
-                iconId = R.drawable.ic_profiles,
-                selected = selectedDestination == 1,
-                onClick = { onDestinationSelected(1) }
-            )
-            BottomBarItem(
-                modifier = Modifier.weight(1f),
                 title = "Configuración",
                 iconId = R.drawable.ic_settings,
-                selected = selectedDestination == 2,
-                onClick = { onDestinationSelected(2) }
+                selected = selectedDestination == 1,
+                onClick = { onDestinationSelected(1) }
             )
         }
     }
@@ -369,8 +337,6 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        PrivateStorageVersionsCard(onApkStored = { storageRefreshCount++ })
-
         LocalVersionStorageCard(
             snapshot = storageSnapshot,
             error = storageError,
@@ -481,32 +447,6 @@ private fun LocalVersionStorageCard(
     error: String?,
     onRefresh: () -> Unit
 ) {
-    val context = LocalContext.current
-    val installManager = remember(context) { GeometryDashInstallManager(context) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    var installedGame by remember { mutableStateOf<InstalledGeometryDash?>(null) }
-    var actionMessage by remember { mutableStateOf<String?>(null) }
-
-    val refreshInstalledGame: () -> Unit = {
-        scope.launch {
-            installedGame = withContext(Dispatchers.IO) {
-                installManager.installedGameInfo()
-            }
-        }
-    }
-
-    LaunchedEffect(installManager) { refreshInstalledGame() }
-
-    DisposableEffect(lifecycleOwner, installManager) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refreshInstalledGame()
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -526,42 +466,14 @@ private fun LocalVersionStorageCard(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "Biblioteca de APK originales guardados por versión",
+                        "Carpeta común para todas las versiones de Geometry Dash",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Button(
-                    onClick = {
-                        onRefresh()
-                        refreshInstalledGame()
-                    },
-                    enabled = snapshot != null
-                ) { Text("Escanear") }
-            }
-
-            Text(
-                if (installedGame == null) {
-                    "La instalación original de Geometry Dash no está instalada."
-                } else {
-                    "Instalación original detectada • " +
-                        (installedGame?.versionName ?: "versión desconocida") +
-                        " • código " + installedGame?.versionCode
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (installedGame != null) {
-                Button(
-                    onClick = {
-                        runCatching { installManager.launchInstalledGame() }
-                            .onFailure {
-                                actionMessage = it.message ?: "No se pudo iniciar Geometry Dash."
-                            }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Jugar instalación original") }
+                Button(onClick = onRefresh, enabled = snapshot != null) {
+                    Text("Escanear")
+                }
             }
 
             when {
@@ -585,890 +497,35 @@ private fun LocalVersionStorageCard(
                         if (snapshot.versions.isEmpty()) {
                             "Carpeta lista. Todavía no hay APK guardados."
                         } else {
-                            snapshot.versions.size.toString() +
-                                " versión(es) guardadas. Cada perfil puede generar su propia instalación."
+                            snapshot.versions.size.toString() + " versión(es) en el almacenamiento local."
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                     snapshot.versions.forEach { localVersion ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .padding(vertical = 5.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                localVersion.displayName,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                localVersion.version + " • " +
-                                    if (localVersion.hasApk) "APK original guardado" else "APK pendiente",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            Text(
-                "Las instalaciones independientes se crean desde Perfiles. La instalación original de Geometry Dash no se reemplaza.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            actionMessage?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
-    val context = LocalContext.current
-    val sessionStore = remember(context) { GitHubSessionStore(context) }
-    val repository = remember(context) { GitHubPrivateStorageRepository(context) }
-    val downloadManager = remember(context) { lazy(LazyThreadSafetyMode.NONE) { PrivateApkDownloadManager(context) } }
-    val downloadScope = androidx.compose.runtime.rememberCoroutineScope()
-
-    var sessionToken by remember { mutableStateOf<String?>(null) }
-    var versions by remember { mutableStateOf<List<PrivateVersionInfo>>(emptyList()) }
-    var isRefreshing by remember { mutableStateOf(false) }
-    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
-    var downloading by remember { mutableStateOf<PrivateVersionInfo?>(null) }
-    var activeDownloadId by remember { mutableStateOf<Long?>(null) }
-    var downloadedBytes by remember { mutableStateOf(0L) }
-    var downloadTotalBytes by remember { mutableStateOf(0L) }
-    var isVerifyingDownload by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-    var loadError by remember { mutableStateOf<String?>(null) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var resumeRefresh by remember { mutableIntStateOf(0) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) resumeRefresh++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    LaunchedEffect(sessionStore, resumeRefresh) {
-        runCatching {
-            withContext(Dispatchers.IO) { sessionStore.readSession() }
-        }.onSuccess {
-            sessionToken = it
-        }.onFailure {
-            sessionToken = null
-            loadError = it.message ?: "No se pudo leer la sesión del almacenamiento privado."
-        }
-    }
-
-    LaunchedEffect(refreshCounter, sessionToken) {
-        val accessToken = sessionToken ?: return@LaunchedEffect
-        isRefreshing = true
-        loadError = null
-        runCatching {
-            withContext(Dispatchers.IO) { repository.loadVersions(accessToken) }
-        }.onSuccess {
-            versions = it
-        }.onFailure {
-            loadError = it.message ?: "No se pudo consultar el catálogo privado."
-        }
-        isRefreshing = false
-    }
-
-    LaunchedEffect(Unit) {
-        // Restoring DownloadManager state must never take down the first screen.
-        val restored = withContext(Dispatchers.IO) {
-            runCatching {
-                val active = downloadManager.value.activeDownload()
-                val message = if (active == null) downloadManager.value.resultMessage() else null
-                active to message
-            }
-        }
-        restored.onSuccess { (active, message) ->
-            if (active != null) {
-                downloading = active.version
-                activeDownloadId = active.id
-                statusMessage = "Descarga en curso: ${active.version.displayName}."
-            } else {
-                statusMessage = message
-                if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
-            }
-        }.onFailure { error ->
-            downloading = null
-            activeDownloadId = null
-            statusMessage = "No se pudo restaurar el estado de descargas: " +
-                (error.message ?: "error del gestor de Android")
-        }
-    }
-
-    LaunchedEffect(activeDownloadId) {
-        val id = activeDownloadId ?: return@LaunchedEffect
-        var fallbackVerificationScheduled = false
-        while (true) {
-            val stateResult = withContext(Dispatchers.IO) {
-                runCatching {
-                    downloadManager.value.query(id) to downloadManager.value.activeDownload()
-                }
-            }
-            if (stateResult.isFailure) {
-                statusMessage = "No se pudo consultar una descarga activa: " +
-                    (stateResult.exceptionOrNull()?.message ?: "error del gestor de Android")
-                downloading = null
-                activeDownloadId = null
-                isVerifyingDownload = false
-                break
-            }
-            val (snapshot, active) = stateResult.getOrThrow()
-            if (active?.id != id) {
-                statusMessage = withContext(Dispatchers.IO) {
-                    runCatching { downloadManager.value.resultMessage() }.getOrNull()
-                }
-                if (statusMessage?.startsWith("APK verificado y guardado") == true) onApkStored()
-                downloading = null
-                activeDownloadId = null
-                isVerifyingDownload = false
-                break
-            }
-            if (snapshot == null) {
-                statusMessage = "Android está preparando el estado de la descarga…"
-            } else {
-                downloadedBytes = snapshot.downloadedBytes.coerceAtLeast(0L)
-                downloadTotalBytes = if (snapshot.totalBytes > 0L) snapshot.totalBytes else downloading?.sizeBytes ?: 0L
-                when (snapshot.status) {
-                    DownloadManager.STATUS_SUCCESSFUL,
-                    DownloadManager.STATUS_FAILED -> {
-                        isVerifyingDownload = true
-                        if (!fallbackVerificationScheduled) {
-                            val scheduled = withContext(Dispatchers.IO) {
-                                runCatching { downloadManager.value.scheduleVerification(id) }
-                            }
-                            if (scheduled.isFailure) {
-                                statusMessage = "No se pudo iniciar la verificación del APK: " +
-                                    (scheduled.exceptionOrNull()?.message ?: "error de WorkManager")
-                                downloading = null
-                                activeDownloadId = null
-                                isVerifyingDownload = false
-                                break
-                            }
-                            fallbackVerificationScheduled = true
-                        }
-                        val verificationStage = withContext(Dispatchers.IO) {
-                            runCatching { downloadManager.value.verificationStage(id) }.getOrNull()
-                        }
-                        statusMessage = verificationStage ?: if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) {
-                            "Descarga completa. Esperando que comience la verificación…"
-                        } else {
-                            "Descarga terminada con error. Comprobando el resultado…"
-                        }
-                    }
-                    DownloadManager.STATUS_PAUSED -> statusMessage = "Descarga pausada por Android; se reanudará cuando sea posible."
-                    DownloadManager.STATUS_PENDING,
-                    DownloadManager.STATUS_RUNNING -> statusMessage = "Descargando en segundo plano…"
-                }
-            }
-            delay(700)
-        }
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    "Dash Launcher Private Storage",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    "Catálogo de APK privado, servido por el backend seguro de Dash Launcher.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (sessionToken == null) {
-                Text(
-                    "Inicia sesión con GitHub desde Configuración → Almacenamiento privado para consultar el repositorio privado.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Button(
-                    onClick = { refreshCounter++ },
-                    enabled = !isRefreshing && downloading == null,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (isRefreshing) "Consultando…" else "Consultar almacenamiento privado")
-                }
-                if (isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                loadError?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                }
-                versions.forEach { item ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(item.displayName, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Versión ${item.version} • ${item.sizeBytes / (1024L * 1024L)} MiB • ${item.supportedAbis.joinToString()}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (!item.officialSignatureVerified) {
-                                Text(
-                                    "Firma válida, pero NO verificada como firma oficial de RobTop.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                            Text(item.warning, style = MaterialTheme.typography.bodySmall)
-                            Button(
-                                onClick = {
-                                    val accessToken = sessionToken
-                                    if (accessToken == null) {
-                                        statusMessage = "Conecta el almacenamiento privado antes de descargar."
-                                    } else {
-                                        downloading = item
-                                        downloadedBytes = 0L
-                                        downloadTotalBytes = item.sizeBytes
-                                        isVerifyingDownload = false
-                                        statusMessage = "Preparando descarga segura…"
-                                        downloadScope.launch {
-                                            runCatching {
-                                                withContext(Dispatchers.IO) {
-                                                    downloadManager.value.enqueue(accessToken, item)
-                                                }
-                                            }.onSuccess { id ->
-                                                activeDownloadId = id
-                                                statusMessage = "Descarga iniciada por Android. Puedes salir de Dash Launcher."
-                                            }.onFailure { error ->
-                                                downloading = null
-                                                statusMessage = error.message ?: "No se pudo iniciar la descarga."
-                                            }
-                                        }
-                                    }
-                                },
-                                enabled = activeDownloadId == null && downloading == null &&
-                                    Build.VERSION.SDK_INT >= item.minAndroidApi &&
-                                    item.supportedAbis.any { Build.SUPPORTED_ABIS.contains(it) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(if (downloading?.id == item.id) "Descargando…" else "Descargar y guardar")
-                            }
-                            if (downloading?.id == item.id) {
-                                val fraction = if (downloadTotalBytes > 0L) {
-                                    (downloadedBytes.toFloat() / downloadTotalBytes.toFloat()).coerceIn(0f, 1f)
-                                } else {
-                                    0f
-                                }
-                                LinearProgressIndicator(
-                                    progress = fraction,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Text(
-                                    "${formatDownloadMegabytes(downloadedBytes)} MB / ${formatDownloadMegabytes(downloadTotalBytes)} MB",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    if (isVerifyingDownload) "Descarga completa. Verificando el APK…"
-                                    else "Descargando…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-                if (versions.isEmpty() && !isRefreshing && loadError == null) {
-                    Text(
-                        "El catálogo privado no contiene versiones todavía.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            statusMessage?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
-private fun PrivateStorageSettingsCard() {
-    val context = LocalContext.current
-    val sessionStore = remember(context) { GitHubSessionStore(context) }
-    val repository = remember(context) { GitHubPrivateStorageRepository(context) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    var connected by remember { mutableStateOf(false) }
-    var isConnecting by remember { mutableStateOf(false) }
-    var refreshEpoch by remember { mutableIntStateOf(0) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refreshEpoch++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    LaunchedEffect(sessionStore, refreshEpoch) {
-        connected = withContext(Dispatchers.IO) { sessionStore.hasSession() }
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp)
-        ) {
-            Text(
-                "Almacenamiento privado",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                "Conecta Dash Launcher con tu cuenta de GitHub. El acceso al repositorio se realiza desde un backend seguro; no necesitas crear ni pegar un token.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Button(
-                onClick = {
-                    isConnecting = true
-                    statusMessage = "Preparando el inicio de sesión seguro…"
-                    scope.launch {
-                        runCatching {
-                            val authUrl = withContext(Dispatchers.IO) {
-                                val verifier = GitHubOAuthPkce.newVerifier()
-                                sessionStore.savePendingVerifier(verifier)
-                                repository.createLoginUrl(GitHubOAuthPkce.challenge(verifier))
-                            }
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)))
-                        }.onSuccess {
-                            statusMessage = "Completa el inicio de sesión de GitHub en el navegador y vuelve a Dash Launcher."
-                        }.onFailure {
-                            sessionStore.clearPendingVerifier()
-                            statusMessage = it.message ?: "No se pudo iniciar el inicio de sesión."
-                        }
-                        isConnecting = false
-                    }
-                },
-                enabled = !isConnecting,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (isConnecting) "Preparando…" else if (connected) "Volver a conectar GitHub" else "Conectar con GitHub")
-            }
-
-            if (connected) {
-                Text(
-                    "Sesión de Dash Launcher guardada de forma cifrada en Android Keystore.",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(
-                    onClick = {
-                        runCatching { sessionStore.clearSession() }
-                            .onSuccess {
-                                connected = false
-                                statusMessage = "Sesión desconectada de este dispositivo."
-                            }
-                            .onFailure { statusMessage = it.message }
-                    },
-                    enabled = !isConnecting,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Desconectar")
-                }
-            } else {
-                Text(
-                    "No hay una sesión conectada. El servidor solo autoriza las cuentas incluidas en su lista de acceso.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Text(
-                "La clave privada de la GitHub App, el secreto OAuth y los tokens de instalación permanecen en el servidor. Android solo conserva una sesión temporal de Dash Launcher.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            statusMessage?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProfilesScreen(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val storageManager = remember(context) { VersionStorageManager(context) }
-    val profileManager = remember(context) { GameProfileManager(storageManager) }
-    val installManager = remember(context) { GeometryDashInstallManager(context) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var instanceCheckEpoch by rememberSaveable { mutableIntStateOf(0) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) instanceCheckEpoch++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    var localVersions by remember { mutableStateOf(emptyList<com.hestalang.dashlauncher.storage.LocalVersionRecord>()) }
-    var selectedVersion by rememberSaveable { mutableStateOf("") }
-    var profiles by remember { mutableStateOf(emptyList<com.hestalang.dashlauncher.storage.GameProfileRecord>()) }
-    var activeProfileId by remember { mutableStateOf<String?>(null) }
-    var newProfileName by rememberSaveable { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-    var isBusy by remember { mutableStateOf(false) }
-    var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
-    var importTargetProfileId by remember { mutableStateOf<String?>(null) }
-    var exportTargetProfileId by remember { mutableStateOf<String?>(null) }
-    val selectedVersionRecord = localVersions.firstOrNull { it.version == selectedVersion }
-
-    val importBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        val targetId = importTargetProfileId
-        if (uri != null && targetId != null && selectedVersion.isNotBlank()) {
-            scope.launch {
-                isBusy = true
-                runCatching {
-                    withContext(Dispatchers.IO) {
-                        val input = context.contentResolver.openInputStream(uri)
-                            ?: throw IllegalStateException("No se pudo abrir el archivo seleccionado.")
-                        profileManager.importGameDataBackup(selectedVersion, targetId, input)
-                    }
-                }.onSuccess {
-                    statusMessage = "Archivo ZIP guardado en la instancia. No se ha aplicado al progreso activo del juego."
-                    refreshCounter++
-                }.onFailure {
-                    statusMessage = it.message ?: "No se pudo importar el archivo ZIP."
-                }
-                isBusy = false
-                importTargetProfileId = null
-            }
-        } else {
-            importTargetProfileId = null
-        }
-    }
-
-    val exportBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/zip")
-    ) { uri ->
-        val targetId = exportTargetProfileId
-        if (uri != null && targetId != null && selectedVersion.isNotBlank()) {
-            scope.launch {
-                isBusy = true
-                runCatching {
-                    withContext(Dispatchers.IO) {
-                        val output = context.contentResolver.openOutputStream(uri)
-                            ?: throw IllegalStateException("No se pudo crear el archivo de destino.")
-                        output.use {
-                            profileManager.exportGameDataBackup(selectedVersion, targetId, it)
-                        }
-                    }
-                }.onSuccess {
-                    statusMessage = "Archivo ZIP exportado."
-                }.onFailure {
-                    statusMessage = it.message ?: "No se pudo exportar el archivo ZIP."
-                }
-                isBusy = false
-                exportTargetProfileId = null
-            }
-        } else {
-            exportTargetProfileId = null
-        }
-    }
-
-    LaunchedEffect(refreshCounter, selectedVersion) {
-        runCatching {
-            withContext(Dispatchers.IO) { storageManager.initialize() }
-        }.onSuccess { snapshot ->
-            localVersions = snapshot.versions
-            val resolvedVersion = selectedVersion.takeIf { value ->
-                snapshot.versions.any { it.version == value }
-            } ?: snapshot.versions.firstOrNull()?.version.orEmpty()
-            if (resolvedVersion != selectedVersion) selectedVersion = resolvedVersion
-            if (resolvedVersion.isNotBlank()) {
-                val initializedProfiles = withContext(Dispatchers.IO) {
-                    profileManager.initialize(resolvedVersion, "Geometry Dash $resolvedVersion")
-                }
-                profiles = initializedProfiles
-                activeProfileId = withContext(Dispatchers.IO) {
-                    profileManager.activeProfileId(resolvedVersion)
-                }
-            } else {
-                profiles = emptyList()
-                activeProfileId = null
-            }
-        }.onFailure {
-            statusMessage = it.message ?: "No se pudieron cargar las instancias."
-        }
-    }
-
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Instancias de Geometry Dash", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(
-                "Cada instancia tiene su propio nombre, configuración del launcher y paquete Android. Los APK base se comparten por versión; Android mantiene los datos privados separados para cada paquete.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text("Versión seleccionada", fontWeight = FontWeight.SemiBold)
-                if (localVersions.isEmpty()) {
-                    Text(
-                        "Primero descarga y guarda un APK desde la sección Versiones para preparar su biblioteca de instancias.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    localVersions.forEach { version ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { selectedVersion = version.version }
-                                .padding(vertical = 5.dp),
+                                .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            RadioButton(
-                                selected = selectedVersion == version.version,
-                                onClick = { selectedVersion = version.version }
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(version.displayName, fontWeight = FontWeight.Medium)
-                                Text(version.version, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (selectedVersion.isNotBlank()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Crear instancia", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    OutlinedTextField(
-                        value = newProfileName,
-                        onValueChange = { newProfileName = it.take(32) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Nombre de la instancia") },
-                        placeholder = { Text("Ej. Principal, Desafíos, Pruebas") },
-                        singleLine = true,
-                        enabled = !isBusy,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                isBusy = true
-                                runCatching {
-                                    withContext(Dispatchers.IO) {
-                                        profileManager.createProfile(selectedVersion, newProfileName)
-                                    }
-                                }.onSuccess {
-                                    newProfileName = ""
-                                    statusMessage = "Instancia creada."
-                                    refreshCounter++
-                                }.onFailure {
-                                    statusMessage = it.message ?: "No se pudo crear la instancia."
-                                }
-                                isBusy = false
-                            }
-                        },
-                        enabled = !isBusy && newProfileName.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Crear instancia")
-                    }
-                }
-            }
-
-            Text(
-                "Instancias de Geometry Dash $selectedVersion",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            profiles.forEach { profile ->
-                var renameDraft by rememberSaveable(profile.id, profile.name) { mutableStateOf(profile.name) }
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(
-                                selected = activeProfileId == profile.id,
-                                onClick = {
-                                    scope.launch {
-                                        isBusy = true
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                profileManager.activateProfile(selectedVersion, profile.id)
-                                            }
-                                        }.onSuccess {
-                                            activeProfileId = profile.id
-                                            statusMessage = "Instancia seleccionada en Dash Launcher."
-                                        }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo seleccionar la instancia."
-                                        }
-                                        isBusy = false
-                                    }
-                                },
-                                enabled = !isBusy
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(profile.name, fontWeight = FontWeight.SemiBold)
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    if (activeProfileId == profile.id) "Instancia seleccionada" else "Instancia disponible",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    localVersion.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    if (profile.hasGameDataBackup) {
-                                        "Respaldo de instancia: ${profile.backupSizeBytes ?: 0L} bytes"
-                                    } else {
-                                        "Sin respaldo de esta instancia"
-                                    },
+                                    localVersion.directory.name + " • " +
+                                        if (localVersion.hasApk) "APK guardado" else "Perfil preparado; APK pendiente",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
-                        val instancePackageName = profileManager.packageNameForProfile(
-                            selectedVersion,
-                            profile.id
-                        )
-                        val instanceIsInstalled = remember(instancePackageName, instanceCheckEpoch) {
-                            installManager.isPackageInstalled(instancePackageName)
-                        }
-                        Text(
-                            if (instanceIsInstalled) "Instancia instalada en Android" else "Instancia todavía no instalada",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            "Paquete de esta instancia: " + instancePackageName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    isBusy = true
-                                    runCatching {
-                                        val sourceApk = selectedVersionRecord
-                                            ?.takeIf { it.hasApk }
-                                            ?.apkFile
-                                            ?: throw IllegalStateException(
-                                                "Primero guarda el APK de esta versión en Almacenamiento local."
-                                            )
-                                        val outputApk = profile.directory.resolve("instance.apk")
-                                        val displayLabel = "Geometry Dash " + selectedVersion + " - " + profile.name
-                                        val result = withContext(Dispatchers.IO) {
-                                            installManager.buildProfileInstance(
-                                                sourceApk = sourceApk,
-                                                outputApk = outputApk,
-                                                packageName = instancePackageName,
-                                                displayLabel = displayLabel
-                                            )
-                                        }
-                                        val installResult = installManager.openInstallerForPackage(
-                                            result.outputApk,
-                                            instancePackageName
-                                        )
-                                        result to installResult
-                                    }.onSuccess { pair ->
-                                        val result = pair.first
-                                        val installResult = pair.second
-                                        statusMessage = when (installResult) {
-                                            InstallRequestResult.PERMISSION_REQUIRED ->
-                                                "Autoriza la instalación de aplicaciones para Dash Launcher y vuelve a pulsar Crear / actualizar."
-                                            InstallRequestResult.INSTALLER_OPENED ->
-                                                "Instalador de Android abierto. Confirma esta instancia para conservarla junto a las demás."
-                                        }
-                                        if (result.warnings.isNotEmpty()) {
-                                            statusMessage = statusMessage.orEmpty() +
-                                                "\nAvisos del análisis: " + result.warnings.joinToString(" ")
-                                        }
-                                    }.onFailure {
-                                        statusMessage = it.message
-                                            ?: "No se pudo preparar la instalación independiente."
-                                    }
-                                    isBusy = false
-                                }
-                            },
-                            enabled = !isBusy && selectedVersionRecord?.hasApk == true,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Crear / actualizar instalación independiente")
-                        }
-                        Button(
-                            onClick = {
-                                runCatching {
-                                    installManager.launchGame(instancePackageName)
-                                }.onFailure {
-                                    statusMessage = it.message ?: "No se pudo iniciar esta instancia."
-                                }
-                            },
-                            enabled = !isBusy && instanceIsInstalled,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Jugar esta instancia")
-                        }
-                        OutlinedTextField(
-                            value = renameDraft,
-                            onValueChange = { renameDraft = it.take(32) },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Cambiar nombre de instancia") },
-                            singleLine = true,
-                            enabled = !isBusy,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        isBusy = true
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                profileManager.renameProfile(selectedVersion, profile.id, renameDraft)
-                                            }
-                                        }.onSuccess {
-                                            statusMessage = "Nombre de la instancia actualizado."
-                                            refreshCounter++
-                                        }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo renombrar la instancia."
-                                        }
-                                        isBusy = false
-                                    }
-                                },
-                                enabled = !isBusy && renameDraft.isNotBlank(),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Renombrar") }
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        isBusy = true
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                profileManager.deleteProfile(selectedVersion, profile.id)
-                                            }
-                                        }.onSuccess {
-                                            statusMessage = "Instancia eliminada."
-                                            refreshCounter++
-                                        }.onFailure {
-                                            statusMessage = it.message ?: "No se pudo eliminar la instancia."
-                                        }
-                                        isBusy = false
-                                    }
-                                },
-                                enabled = !isBusy && profiles.size > 1 && !instanceIsInstalled,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Eliminar") }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    importTargetProfileId = profile.id
-                                    importBackupLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
-                                },
-                                enabled = !isBusy,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Importar ZIP") }
-                            Button(
-                                onClick = {
-                                    exportTargetProfileId = profile.id
-                                    exportBackupLauncher.launch("Geometry-Dash-$selectedVersion-${profile.id}.zip")
-                                },
-                                enabled = !isBusy && profile.hasGameDataBackup,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Exportar ZIP") }
-                        }
                     }
                 }
             }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Instancias y compatibilidad", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Cada instancia tiene una carpeta propia dentro de instances/ y un identificador de paquete Android independiente. El APK original verificado se conserva una sola vez en versions/<versión>/ y sirve como base para generar la instancia. Android reserva un sandbox privado distinto para cada paquete. La copia del APK de instalación queda dentro de la carpeta de su instancia. Esta primera fase modifica el manifiesto y la tabla de recursos, pero no reescribe código DEX ni bibliotecas nativas; algunas funciones del juego podrían depender del identificador original y fallar. La firma de cada clon es local de Dash Launcher, no la firma original de RobTop. Los ZIP se guardan en instances/<instancia>/backups/ y todavía no se aplican al progreso. Para eliminar una instancia instalada, primero desinstálala desde los ajustes de Android.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        statusMessage?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -1780,8 +837,6 @@ private fun SettingsScreen(
                 }
             }
         }
-
-        PrivateStorageSettingsCard()
     }
 }
 
@@ -1792,6 +847,8 @@ private fun VersionDownloadAction(
 ) {
     val context = LocalContext.current
     val storageManager = remember(context) { VersionStorageManager(context) }
+    val installManager = remember(context) { GeometryDashInstallManager(context) }
+    val versionInstaller = remember(context) { VersionInstallationManager() }
 
     if (resolution is DownloadResolution.OpenExternalPage) {
         Button(
@@ -1820,12 +877,21 @@ private fun VersionDownloadAction(
 
     val coordinator = remember(context) { ApkDownloadCoordinator(context) }
     val artifact = (resolution as? DownloadResolution.Available)?.artifact
+    val existingStoredApkPath = remember(artifact?.versionLabel) {
+        artifact?.let { item ->
+            storageManager.listVersions()
+                .firstOrNull { it.version == item.versionLabel && it.hasApk }
+                ?.apkFile?.absolutePath
+        }
+    }
+    var storedApkPath by rememberSaveable(artifact?.fileName) {
+        mutableStateOf(existingStoredApkPath)
+    }
 
     var downloadId by rememberSaveable(artifact?.fileName) { mutableStateOf<Long?>(null) }
     var progressPercent by remember(artifact?.fileName) { mutableIntStateOf(0) }
     var statusMessage by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
     var isVerified by rememberSaveable(artifact?.fileName) { mutableStateOf(false) }
-    var verifiedUriString by rememberSaveable(artifact?.fileName) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(downloadId, artifact) {
         val id = downloadId ?: return@LaunchedEffect
@@ -1856,8 +922,6 @@ private fun VersionDownloadAction(
                     }
                     when (verification) {
                         is DownloadVerification.Verified -> {
-                            isVerified = true
-                            verifiedUriString = verification.uri.toString()
                             try {
                                 val storedVersion = withContext(Dispatchers.IO) {
                                     val source = context.contentResolver.openInputStream(verification.uri)
@@ -1872,14 +936,15 @@ private fun VersionDownloadAction(
                                         signingCertificateSha256 = item.expectedSigningCertificateSha256
                                     )
                                 }
+                                storedApkPath = storedVersion.apkFile.absolutePath
+                                isVerified = true
                                 onApkStored()
-                                statusMessage = "APK verificado y guardado en " +
-                                    storedVersion.apkFile.absolutePath +
-                                    ". Android todavía debe confirmar la instalación."
+                                statusMessage = "APK verificado y guardado. Ahora puedes instalar Geometry Dash " +
+                                    item.versionLabel + " como una aplicación independiente."
                             } catch (error: Exception) {
-                                statusMessage = "El APK fue verificado, pero no se pudo guardar en versions/: " +
-                                    (error.message ?: "error de almacenamiento") +
-                                    ". Todavía puedes instalarlo desde la descarga verificada."
+                                isVerified = false
+                                statusMessage = "El APK fue verificado, pero no se pudo guardar para preparar la instalación: " +
+                                    (error.message ?: "error de almacenamiento")
                             }
                         }
                         is DownloadVerification.Rejected -> {
@@ -1948,46 +1013,80 @@ private fun VersionDownloadAction(
             )
         }
 
-        if (isVerified && !verifiedUriString.isNullOrBlank()) {
+        val gameVersion = artifact.versionLabel
+        val versionPackageName = versionInstaller.packageNameForVersion(gameVersion)
+        val sourceApkPath = storedApkPath
+
+        if (sourceApkPath != null && File(sourceApkPath).isFile) {
             Button(
                 onClick = {
-                    val apkUri = Uri.parse(verifiedUriString)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !context.packageManager.canRequestPackageInstalls()
-                    ) {
-                        runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                    Uri.parse("package:" + context.packageName)
-                                )
-                            )
-                        }.onSuccess {
-                            statusMessage = "Autoriza a Dash Launcher para instalar aplicaciones y vuelve a pulsar Instalar / actualizar."
-                        }.onFailure {
-                            statusMessage = "No se pudo abrir el permiso de instalación de Android."
+                    runCatching {
+                        val sourceApk = File(sourceApkPath)
+                        val storedVersion = storageManager.listVersions()
+                            .firstOrNull { it.version == gameVersion && it.hasApk }
+                            ?: throw IllegalStateException("No se encontró el APK verificado de esta versión.")
+                        val prepared = versionInstaller.prepare(
+                            sourceApk = sourceApk,
+                            version = gameVersion,
+                            outputDirectory = storedVersion.profileDirectory
+                        )
+                        val result = installManager.openInstallerForPackage(
+                            apkFile = prepared.apkFile,
+                            expectedPackageName = prepared.packageName
+                        )
+                        when (result) {
+                            com.hestalang.dashlauncher.install.InstallRequestResult.PERMISSION_REQUIRED -> {
+                                statusMessage = "Autoriza a Dash Launcher a instalar aplicaciones y vuelve a pulsar Instalar versión."
+                            }
+                            com.hestalang.dashlauncher.install.InstallRequestResult.INSTALLER_OPENED -> {
+                                statusMessage = buildString {
+                                    append("Se abrió el instalador de Geometry Dash ")
+                                    append(gameVersion)
+                                    append(". Confirma la instalación; las otras versiones no se eliminarán.")
+                                    if (prepared.warnings.isNotEmpty()) {
+                                        append(" Advertencias de compatibilidad: ")
+                                        append(prepared.warnings.joinToString(" "))
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        runCatching {
-                            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE)
-                                .setDataAndType(
-                                    apkUri,
-                                    "application/vnd.android.package-archive"
-                                )
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            context.startActivity(installIntent)
-                        }.onSuccess {
-                            statusMessage = "Se abrió el instalador de Android. Revisa que el paquete y la versión sean correctos y confirma la actualización."
-                        }.onFailure { error ->
-                            statusMessage = error.message ?: "No se pudo abrir el instalador de Android."
-                        }
+                    }.onFailure { error ->
+                        statusMessage = error.message ?: "No se pudo preparar la instalación independiente."
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Instalar / actualizar")
+                Text(
+                    if (installManager.isPackageInstalled(versionPackageName)) {
+                        "Reinstalar versión"
+                    } else {
+                        "Instalar versión"
+                    }
+                )
             }
         }
+
+        Button(
+            onClick = {
+                runCatching {
+                    if (!installManager.isPackageInstalled(versionPackageName)) {
+                        throw IllegalStateException("Esta versión todavía no está instalada. Descarga e instala primero el APK.")
+                    }
+                    installManager.launchGame(versionPackageName)
+                }.onFailure { error ->
+                    statusMessage = error.message ?: "No se pudo iniciar esta versión."
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Jugar Geometry Dash " + gameVersion)
+        }
+
+        Text(
+            "Cada versión se instala con un paquete Android propio. Instalar o jugar una versión no reemplaza las demás ni la instalación original.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         statusMessage?.let { message ->
             Text(

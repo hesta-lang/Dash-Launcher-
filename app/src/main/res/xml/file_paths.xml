@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-files-path
-        name="stored_game_apks"
-        path="versions/" />
-    <files-path
-        name="stored_game_apks_internal"
-        path="versions/" />
+    <external-files-path name="version_apks_external" path="versions/" />
+    <files-path name="version_apks_internal" path="versions/" />
 </paths>

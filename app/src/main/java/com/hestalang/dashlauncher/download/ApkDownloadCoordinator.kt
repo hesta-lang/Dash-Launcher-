@@ -1,9 +1,10 @@
 package com.hestalang.dashlauncher.download
 
 import android.app.DownloadManager
-import com.hestalang.dashlauncher.security.ApkSignerCertificateReader
 import android.content.Context
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -179,8 +180,14 @@ class ApkDownloadCoordinator(context: Context) {
         apkFile: File,
         artifact: DownloadArtifact
     ): String? {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
         val packageInfo = try {
-            appContext.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
+            appContext.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
         } catch (error: Exception) {
             return "No se pudo leer la identidad interna del APK."
         } ?: return "El archivo descargado no es un APK Android válido."
@@ -189,17 +196,13 @@ class ApkDownloadCoordinator(context: Context) {
             return "El APK declara un paquete distinto de Geometry Dash; se eliminó por seguridad."
         }
 
-        val certificates = try {
-            ApkSignerCertificateReader.readCertificates(appContext, apkFile, packageInfo)
-        } catch (error: Exception) {
-            return "No se pudo extraer el certificado de firma del APK."
+        val signatures = currentSignatures(packageInfo)
+        if (signatures.isEmpty()) {
+            return "No se pudo leer el certificado de firma del APK."
         }
-        if (certificates.isEmpty()) {
-            return "El APK no contiene un certificado de firma legible."
-        }
-        val signerHashes = certificates.map { certificate ->
+        val signerHashes = signatures.map { signature ->
             MessageDigest.getInstance("SHA-256")
-                .digest(certificate)
+                .digest(signature.toByteArray())
                 .joinToString("") { byte -> "%02x".format(byte) }
         }
         if (signerHashes.none {
@@ -237,6 +240,15 @@ class ApkDownloadCoordinator(context: Context) {
         }
 
         return null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentSignatures(packageInfo: PackageInfo): List<Signature> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.signingInfo?.apkContentsSigners?.toList().orEmpty()
+        } else {
+            packageInfo.signatures?.toList().orEmpty()
+        }
     }
 
     private fun reject(downloadId: Long, reason: String): DownloadVerification.Rejected {

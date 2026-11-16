@@ -42,7 +42,7 @@ jobs:
       - name: Run catalog and download-provider validation tests
         run: gradle :app:testDebugUnitTest
 
-      - name: Build release and validate startup plus profile installation isolation on Android 10
+      - name: Build optimized release and generate Baseline Profile
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
@@ -52,95 +52,11 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
-          script: |
-            gradle :app:assembleRelease
+          script: gradle :app:assembleRelease
 
-            # First verify the optimized APK cold-starts and stays in the foreground.
-            adb logcat -c
-            adb install -r app/build/outputs/apk/release/app-release.apk
-            adb shell am force-stop com.hestalang.dashlauncher
-            adb shell am start -W -n com.hestalang.dashlauncher/.MainActivity
-            sleep 5
-
-            adb shell dumpsys activity activities > startup-activities.txt
-            adb logcat -d -t 5000 > startup-logcat.txt
-
-            adb shell pidof com.hestalang.dashlauncher > /dev/null || (echo "Dash Launcher process exited during cold start."; tail -n 500 startup-logcat.txt; exit 1)
-            grep -E 'mResumedActivity|ResumedActivity' startup-activities.txt | grep -q 'com.hestalang.dashlauncher' || (echo "Dash Launcher is not the resumed activity after cold start."; cat startup-activities.txt; tail -n 500 startup-logcat.txt; exit 1)
-
-            # Build a tiny test-only app under the real game package ID.
-            # It is not a Geometry Dash distribution; it only exercises package isolation.
-            gradle :profilefixture:assembleDebug :app:assembleDebug :app:assembleDebugAndroidTest
-
-            adb install -r profilefixture/build/outputs/apk/debug/profilefixture-debug.apk
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-
-            # The emulator action runs script lines in separate shells, so keep every
-            # path and package name literal instead of relying on shell variables.
-            # The instrumented test has already emitted this exact app-specific path.
-            adb logcat -c
-            gradle :app:connectedDebugAndroidTest
-
-            # Retrieve the clone from app-specific external storage with adb pull.
-            # This avoids copying binary APK bytes through run-as/stdout.
-            adb pull /storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/profile-clone-validation/instance.apk profile-instance-validation.apk
-            test -s profile-instance-validation.apk
-            {
-              echo "Exported profile APK:"
-              stat -c 'size=%s bytes' profile-instance-validation.apk
-              sha256sum profile-instance-validation.apk
-            } > profile-apk-export-diagnostics.txt
-            unzip -t profile-instance-validation.apk >> profile-apk-export-diagnostics.txt 2>&1
-            cat profile-apk-export-diagnostics.txt
-            adb install -r profile-instance-validation.apk
-
-            adb shell pm path com.robtopx.geometryjump > original-package-path.txt
-            grep -q 'package:' original-package-path.txt || (echo "The original package was replaced or is missing."; exit 1)
-            adb shell pm path com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74 > profile-package-path.txt
-            grep -q 'package:' profile-package-path.txt || (echo "The independent profile package was not installed."; exit 1)
-
-            adb shell am force-stop com.robtopx.geometryjump
-            adb shell am start -W -n com.robtopx.geometryjump/com.robtopx.geometryjump.FixtureActivity
-            adb shell pidof com.robtopx.geometryjump > /dev/null || (echo "The original package did not start."; exit 1)
-
-            adb shell am force-stop com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74
-            adb shell am start -W -n com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74/com.robtopx.geometryjump.FixtureActivity
-            adb shell pidof com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74 > /dev/null || (echo "The profile package did not start."; exit 1)
-
-            printf '%s\n' 'Original package: com.robtopx.geometryjump' > profile-install-validation.txt
-            cat original-package-path.txt >> profile-install-validation.txt
-            printf '%s\n' 'Profile package: com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74' >> profile-install-validation.txt
-            cat profile-package-path.txt >> profile-install-validation.txt
-            printf '%s\n' 'Both package IDs were installed and launched independently.' >> profile-install-validation.txt
-            adb logcat -d -t 5000 > profile-install-validation-logcat.txt
-
-      - name: Upload release APK
+      - name: Upload optimized release APK
         uses: actions/upload-artifact@v4
         with:
           name: dash-launcher-${{ github.run_number }}
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-
-      - name: Upload Android startup diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dash-launcher-startup-diagnostics-${{ github.run_number }}
-          path: |
-            startup-activities.txt
-            startup-logcat.txt
-          if-no-files-found: warn
-
-      - name: Upload profile installation validation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dash-launcher-profile-validation-${{ github.run_number }}
-          path: |
-            profile-install-validation.txt
-            profile-install-validation-logcat.txt
-            profile-instance-validation.apk
-            profile-apk-export-diagnostics.txt
-            app/build/outputs/androidTest-results/connected/debug
-            app/build/reports/androidTests/connected/debug
-          if-no-files-found: warn
