@@ -14,7 +14,7 @@ import java.util.zip.ZipFile
 
 /**
  * Reads APK signer certificates using PackageManager first, then falls back
- * to the v1 JAR-signature certificate blocks (META-INF/*.RSA, *.DSA, *.EC).
+ * to the v1 JAR-signature certificate blocks (META-INF certificate block files).
  *
  * The fallback is useful on Android builds where getPackageArchiveInfo()
  * returns PackageInfo but leaves signingInfo/signatures empty.
