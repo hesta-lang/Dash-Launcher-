@@ -12,5 +12,7 @@ data class VersionEntry(
     val sizeBytes: Long?,
     val sha256: String?,
     val providerId: String = "direct",
-    val providerName: String? = null
+    val providerName: String? = null,
+    val packageName: String? = null,
+    val signingCertificateSha256: String? = null
 )
