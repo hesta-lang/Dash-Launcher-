@@ -28,6 +28,7 @@ data class LocalVersionRecord(
     val displayName: String,
     val directory: File,
     val apkFile: File,
+    /** Kept as a migration source for profile data created by older Dash Launcher builds. */
     val profileDirectory: File,
     val hasApk: Boolean,
     val apkSizeBytes: Long?,
@@ -40,22 +41,34 @@ data class VersionStorageSnapshot(
 )
 
 /**
- * Owns the app-specific versions/ directory.
+ * Owns the shared Dash Launcher storage root.
  *
- * On Android this resolves to:
- * /storage/emulated/0/Android/data/com.hestalang.dashlauncher/files/versions/
+ * Prism-style layout:
+ *   <app-files>/
+ *     versions/<version>/game.apk       shared, verified version library
+ *     instances/<instance-id>/          independent instance configuration/data
+ *     cache/                            temporary and rebuildable files
  *
- * The external app-specific directory is preferred for large APKs. If it is
- * unavailable, the manager falls back to the app's internal files directory.
- * No broad storage permission is needed.
+ * The versions/ path is intentionally unchanged from earlier releases. Only the
+ * storage root is now its parent so the new instances/ and cache/ folders can sit
+ * beside it without moving users' already-downloaded APKs.
  */
 class VersionStorageManager internal constructor(
-    private val rootDirectory: File,
+    private val storageRootDirectory: File,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis
 ) {
-    constructor(context: Context) : this(resolveRootDirectory(context))
+    constructor(context: Context) : this(resolveStorageRootDirectory(context))
 
     private val gson = GsonBuilder().setPrettyPrinting().create()
+
+    /** Shared, immutable-by-profile library of verified game APKs. */
+    val rootDirectory: File = File(storageRootDirectory, VERSIONS_DIRECTORY)
+
+    /** One directory per version/profile pair; each maps to one Android package sandbox. */
+    val instancesDirectory: File = File(storageRootDirectory, INSTANCES_DIRECTORY)
+
+    /** Rebuildable temporary files, separate from the shared version library and instances. */
+    val cacheDirectory: File = File(storageRootDirectory, CACHE_DIRECTORY)
 
     fun initialize(): VersionStorageSnapshot {
         requireRootDirectory()
@@ -73,11 +86,6 @@ class VersionStorageManager internal constructor(
         }
         check(versionDirectory.isDirectory) {
             "La ruta de Geometry Dash $version no es un directorio."
-        }
-
-        val profileDirectory = File(versionDirectory, "profile")
-        if (!profileDirectory.exists() && !profileDirectory.mkdirs()) {
-            throw IllegalStateException("No se pudo crear el perfil de Geometry Dash $version.")
         }
 
         val existing = readMetadata(versionDirectory)
@@ -100,7 +108,7 @@ class VersionStorageManager internal constructor(
     }
 
     /**
-     * Copies an already-verified APK into this version's private folder.
+     * Copies an already-verified APK into the shared version library.
      * The copy is independently checked before replacing an existing game.apk,
      * so a partial or mismatched download cannot destroy a previously stored APK.
      * The input stream is consumed and closed by this method.
@@ -195,8 +203,14 @@ class VersionStorageManager internal constructor(
     }
 
     private fun requireRootDirectory() {
+        if (!storageRootDirectory.exists() && !storageRootDirectory.mkdirs()) {
+            throw IllegalStateException("No se pudo crear el almacenamiento de Dash Launcher.")
+        }
+        check(storageRootDirectory.isDirectory) {
+            "La ruta raíz de almacenamiento de Dash Launcher no es un directorio."
+        }
         if (!rootDirectory.exists() && !rootDirectory.mkdirs()) {
-            throw IllegalStateException("No se pudo crear el almacenamiento local de versiones.")
+            throw IllegalStateException("No se pudo crear la biblioteca local de versiones.")
         }
         check(rootDirectory.isDirectory) {
             "La ruta de almacenamiento de versiones existe, pero no es un directorio."
@@ -205,7 +219,7 @@ class VersionStorageManager internal constructor(
 
     private fun readMetadata(directory: File): VersionStorageMetadata? {
         val metadataFile = File(directory, METADATA_FILE_NAME)
-        if (!metadataFile.isFile) return null
+        if (!metadataFile.isFile || metadataFile.length() > MAX_METADATA_BYTES) return null
         return runCatching {
             FileInputStream(metadataFile).bufferedReader(Charsets.UTF_8).use { reader ->
                 gson.fromJson(reader, VersionStorageMetadata::class.java)
@@ -234,7 +248,7 @@ class VersionStorageManager internal constructor(
             displayName = metadata.displayName,
             directory = directory,
             apkFile = apkFile,
-            profileDirectory = File(directory, "profile"),
+            profileDirectory = File(directory, LEGACY_PROFILE_DIRECTORY),
             hasApk = apkFile.isFile,
             apkSizeBytes = if (apkFile.isFile) apkFile.length() else metadata.apkSizeBytes,
             apkSha256 = metadata.apkSha256
@@ -271,15 +285,18 @@ class VersionStorageManager internal constructor(
         const val OFFICIAL_GAME_PACKAGE = "com.robtopx.geometryjump"
         private const val METADATA_SCHEMA_VERSION = 1
         private const val METADATA_FILE_NAME = "metadata.json"
+        private const val VERSIONS_DIRECTORY = "versions"
+        private const val INSTANCES_DIRECTORY = "instances"
+        private const val CACHE_DIRECTORY = "cache"
+        private const val LEGACY_PROFILE_DIRECTORY = "profile"
+        private const val MAX_METADATA_BYTES = 64 * 1024L
         private val VERSION_PATTERN =
             Regex("^[0-9]+(?:\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
         private val SHA256_PATTERN = Regex("^[a-fA-F0-9]{64}$")
 
-        private fun resolveRootDirectory(context: Context): File {
+        private fun resolveStorageRootDirectory(context: Context): File {
             val appContext = context.applicationContext
-            val appSpecificExternalFiles = appContext.getExternalFilesDir(null)
-            val baseDirectory = appSpecificExternalFiles ?: appContext.filesDir
-            return File(baseDirectory, "versions")
+            return appContext.getExternalFilesDir(null) ?: appContext.filesDir
         }
     }
 }
