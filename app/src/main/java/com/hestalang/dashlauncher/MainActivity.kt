@@ -615,8 +615,9 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                         downloadedBytes = downloaded
                         downloadTotalBytes = total
                     }
-                }
-                mainHandler.post { isVerifyingDownload = true }
+                }, onVerifying = {
+                    mainHandler.post { isVerifyingDownload = true }
+                })
                 try {
                     storageManager.storeVerifiedApk(
                         version = selected.version,
