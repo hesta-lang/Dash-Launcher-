@@ -27,7 +27,8 @@ data class CatalogArtifactMetadata(
     val providerId: String,
     val url: String?,
     val sizeBytes: Long?,
-    val sha256: String?
+    val sha256: String?,
+    val providerName: String?
 )
 
 data class CatalogVersionMetadata(
@@ -130,8 +131,8 @@ object CatalogJsonParser {
             }
             value.asString
         }.distinct()
-        require(abis.isNotEmpty() && abis.all { it in supportedAbis }) {
-            "Los metadatos contienen ABI no compatibles o una lista vacía."
+        require(abis.all { it in supportedAbis }) {
+            "Los metadatos contienen ABI no compatibles."
         }
 
         val artifactElement = root.get("artifact")
@@ -141,11 +142,15 @@ object CatalogJsonParser {
             require(artifactElement.isJsonObject) { "artifact debe ser un objeto o null." }
             val value = artifactElement.asJsonObject
             val provider = requiredString(value, "provider")
+            val providerName = optionalString(value.get("providerName"))
             val url = optionalString(value.get("url"))
             val size = optionalLong(value.get("sizeBytes"))
             val hash = optionalString(value.get("sha256"))
 
             if (provider == "direct") {
+                require(abis.isNotEmpty()) {
+                    "El proveedor direct requiere al menos una ABI verificada."
+                }
                 require(!url.isNullOrBlank() && isValidHttpsUrl(url)) {
                     "El proveedor direct requiere una URL HTTPS válida."
                 }
@@ -156,7 +161,15 @@ object CatalogJsonParser {
                     "El proveedor direct requiere un SHA-256 de 64 caracteres hexadecimales."
                 }
             }
-            CatalogArtifactMetadata(provider, url, size, hash)
+            if (provider == "external-page") {
+                require(!providerName.isNullOrBlank()) {
+                    "El proveedor externo requiere un nombre visible."
+                }
+                require(!url.isNullOrBlank() && isValidExternalPageUrl(url)) {
+                    "El proveedor externo requiere una página HTTPS de un dominio permitido."
+                }
+            }
+            CatalogArtifactMetadata(provider, url, size, hash, providerName)
         }
 
         return CatalogVersionMetadata(
@@ -196,6 +209,22 @@ object CatalogJsonParser {
         }
         return resolved.toASCIIString()
     }
+
+    private fun isValidExternalPageUrl(value: String): Boolean = runCatching {
+        val uri = URI(value)
+        val allowedHosts = setOf(
+            "play.google.com",
+            "uoldown.com",
+            "www.uoldown.com",
+            "apkcombo.com",
+            "www.apkcombo.com"
+        )
+        uri.scheme.equals("https", ignoreCase = true) &&
+            !uri.host.isNullOrBlank() &&
+            uri.host.lowercase() in allowedHosts &&
+            uri.userInfo == null &&
+            uri.fragment == null
+    }.getOrDefault(false)
 
     private fun isValidHttpsUrl(value: String): Boolean = runCatching {
         val uri = URI(value)
