@@ -615,6 +615,7 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
 
     LaunchedEffect(activeDownloadId) {
         val id = activeDownloadId ?: return@LaunchedEffect
+        var fallbackVerificationScheduled = false
         while (true) {
             val snapshot = withContext(Dispatchers.IO) { downloadManager.query(id) }
             val active = withContext(Dispatchers.IO) { downloadManager.activeDownload() }
@@ -632,13 +633,22 @@ private fun PrivateStorageVersionsCard(onApkStored: () -> Unit) {
                 downloadedBytes = snapshot.downloadedBytes.coerceAtLeast(0L)
                 downloadTotalBytes = if (snapshot.totalBytes > 0L) snapshot.totalBytes else downloading?.sizeBytes ?: 0L
                 when (snapshot.status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        isVerifyingDownload = true
-                        statusMessage = "Descarga completa. Verificando SHA-256, firma y compatibilidad…"
-                    }
+                    DownloadManager.STATUS_SUCCESSFUL,
                     DownloadManager.STATUS_FAILED -> {
                         isVerifyingDownload = true
-                        statusMessage = "Descarga terminada con error. Comprobando el resultado…"
+                        if (!fallbackVerificationScheduled) {
+                            withContext(Dispatchers.IO) {
+                                downloadManager.scheduleVerification(id)
+                            }
+                            fallbackVerificationScheduled = true
+                        }
+                        statusMessage = withContext(Dispatchers.IO) {
+                            downloadManager.verificationStage(id)
+                        } ?: if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) {
+                            "Descarga completa. Esperando que comience la verificación…"
+                        } else {
+                            "Descarga terminada con error. Comprobando el resultado…"
+                        }
                     }
                     DownloadManager.STATUS_PAUSED -> statusMessage = "Descarga pausada por Android; se reanudará cuando sea posible."
                     DownloadManager.STATUS_PENDING,
