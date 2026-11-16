@@ -31,7 +31,7 @@ La rama de desarrollo incorpora una primera implementación experimental para cr
 Cada instancia recibe un identificador de paquete propio, por ejemplo:
 
 ```text
-com.hestalang.dashlauncher.gd.v322e32303831.pdefault
+com.hestalang.dashlauncher.gd.v322e32303831.p64656661756c74
 ```
 
 Dash Launcher prepara una copia del APK guardado, actualiza el identificador del manifiesto y de la tabla de recursos, ajusta las autoridades de proveedores y otros identificadores del manifiesto, y firma el resultado con una clave persistente del Android Keystore. Android instala esa copia como otra aplicación, sin reemplazar la instalación original ni las demás instancias. El instalador de Android sigue solicitando la confirmación del usuario.
