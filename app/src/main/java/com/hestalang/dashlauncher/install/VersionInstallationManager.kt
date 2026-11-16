@@ -28,8 +28,8 @@ class VersionInstallationManager(
             "No se pudo crear la carpeta de instalación de Geometry Dash $version."
         }
 
-        val token = versionToken(version)
         val packageName = packageNameForVersion(version)
+        val token = versionToken(version)
         val outputApk = File(outputDirectory, "geometry-dash-$token.apk")
         val result = cloner.build(
             sourceApk = sourceApk,
@@ -47,7 +47,7 @@ class VersionInstallationManager(
 
     companion object {
         private val VERSION_PATTERN =
-            Regex("^[0-9]+(?:\\\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+            Regex("^[0-9]+(?:\\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
 
         fun packageNameForVersion(version: String): String {
             require(version.length <= 32 && VERSION_PATTERN.matches(version)) {
