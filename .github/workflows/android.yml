@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ main, feature/private-storage-profiles ]
+    branches: [ main, feature/private-storage-profiles, fix/private-storage-token-and-catalog-ui ]
   pull_request:
     branches: [ main, feature/private-storage-profiles ]
   workflow_dispatch:
