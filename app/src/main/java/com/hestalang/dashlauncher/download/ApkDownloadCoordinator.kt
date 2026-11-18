@@ -2,13 +2,11 @@ package com.hestalang.dashlauncher.download
 
 import android.app.DownloadManager
 import android.content.Context
-import android.content.pm.PackageInfo
-import android.content.pm.PackageManager
-import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.database.Cursor
+import com.android.apksig.ApkVerifier
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -150,9 +148,7 @@ class ApkDownloadCoordinator(context: Context) {
                 )
             }
 
-            val actualHash = digest.digest().joinToString("") { byte ->
-                "%02x".format(byte)
-            }
+            val actualHash = digest.digest().toHexString()
             if (!actualHash.equals(artifact.expectedSha256, ignoreCase = true)) {
                 return reject(
                     downloadId,
@@ -176,17 +172,52 @@ class ApkDownloadCoordinator(context: Context) {
         }
     }
 
+    /**
+     * Verify the APK's cryptographic signing blocks directly. PackageManager's
+     * archive-signature fields vary between Android/OEM implementations and can
+     * be empty even when apksigner confirms a valid v1/v2-signed APK.
+     */
     private fun verifyApkIdentityAndAbi(
         apkFile: File,
         artifact: DownloadArtifact
     ): String? {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
-        } else {
-            @Suppress("DEPRECATION")
-            PackageManager.GET_SIGNATURES
+        val verification = try {
+            ApkVerifier.Builder(apkFile).build().verify()
+        } catch (error: Exception) {
+            return "No se pudo comprobar la firma criptográfica del APK: " +
+                (error.message ?: error.javaClass.simpleName)
         }
+
+        if (!verification.isVerified) {
+            val details = verification.allErrors
+                .take(4)
+                .joinToString("; ")
+                .ifBlank { "el verificador no aceptó ningún esquema de firma" }
+            return "La firma criptográfica del APK no es válida: $details"
+        }
+
+        val signerHashes = verification.signerCertificates.map { certificate ->
+            MessageDigest.getInstance("SHA-256")
+                .digest(certificate.encoded)
+                .toHexString()
+        }
+        if (signerHashes.isEmpty()) {
+            return "El APK no contiene un certificado de firma verificable."
+        }
+        if (signerHashes.none {
+                it.equals(artifact.expectedSigningCertificateSha256, ignoreCase = true)
+            }) {
+            return "El APK está firmado, pero el certificado no coincide con el catálogo. " +
+                "Certificado detectado: " + signerHashes.joinToString(", ")
+        }
+
         val packageInfo = try {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                android.content.pm.PackageManager.GET_SIGNATURES
+            }
             appContext.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
         } catch (error: Exception) {
             return "No se pudo leer la identidad interna del APK."
@@ -194,21 +225,6 @@ class ApkDownloadCoordinator(context: Context) {
 
         if (packageInfo.packageName != artifact.expectedPackageName) {
             return "El APK declara un paquete distinto de Geometry Dash; se eliminó por seguridad."
-        }
-
-        val signatures = currentSignatures(packageInfo)
-        if (signatures.isEmpty()) {
-            return "No se pudo leer el certificado de firma del APK."
-        }
-        val signerHashes = signatures.map { signature ->
-            MessageDigest.getInstance("SHA-256")
-                .digest(signature.toByteArray())
-                .joinToString("") { byte -> "%02x".format(byte) }
-        }
-        if (signerHashes.none {
-                it.equals(artifact.expectedSigningCertificateSha256, ignoreCase = true)
-            }) {
-            return "La firma del APK no coincide con el certificado verificado del catálogo."
         }
 
         val apkAbis = linkedSetOf<String>()
@@ -242,14 +258,8 @@ class ApkDownloadCoordinator(context: Context) {
         return null
     }
 
-    @Suppress("DEPRECATION")
-    private fun currentSignatures(packageInfo: PackageInfo): List<Signature> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            packageInfo.signingInfo?.apkContentsSigners?.toList().orEmpty()
-        } else {
-            packageInfo.signatures?.toList().orEmpty()
-        }
-    }
+    private fun ByteArray.toHexString(): String =
+        joinToString("") { byte -> "%02x".format(byte) }
 
     private fun reject(downloadId: Long, reason: String): DownloadVerification.Rejected {
         downloadManager.remove(downloadId)

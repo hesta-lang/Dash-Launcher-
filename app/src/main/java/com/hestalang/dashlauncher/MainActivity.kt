@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,14 +54,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.hestalang.dashlauncher.data.CatalogVersionMetadata
 import com.hestalang.dashlauncher.data.CatalogVersionRecord
 import com.hestalang.dashlauncher.data.RemoteVersionCatalogRepository
+import com.hestalang.dashlauncher.data.PrivateStorageCatalogRepository
+import com.hestalang.dashlauncher.data.PrivateStorageVersion
 import com.hestalang.dashlauncher.data.VersionEntry
 import com.hestalang.dashlauncher.install.GeometryDashInstallManager
 import com.hestalang.dashlauncher.install.VersionInstallationManager
 import com.hestalang.dashlauncher.download.ApkDownloadCoordinator
+import com.hestalang.dashlauncher.download.DownloadArtifact
 import com.hestalang.dashlauncher.download.CatalogDirectDownloadProvider
 import com.hestalang.dashlauncher.download.ExternalCatalogPageProvider
 import com.hestalang.dashlauncher.download.DownloadProviderRegistry
@@ -73,6 +78,7 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 private const val SETTINGS_FILE = "dash_launcher_settings"
 private const val THEME_PREFERENCE = "app_theme"
@@ -276,7 +282,14 @@ private fun BottomBarItem(
 private fun VersionsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val repository = remember(context) { RemoteVersionCatalogRepository(context) }
+    val privateRepository = remember { PrivateStorageCatalogRepository() }
+    val tokenStore = remember(context) { GitHubTokenStore(context) }
     val storageManager = remember(context) { VersionStorageManager(context) }
+
+    var privateVersions by remember { mutableStateOf<List<PrivateStorageVersion>>(emptyList()) }
+    var privateLoading by remember { mutableStateOf(true) }
+    var privateError by remember { mutableStateOf<String?>(null) }
+
 
     var storageRefreshCount by rememberSaveable { mutableIntStateOf(0) }
     var storageSnapshot by remember { mutableStateOf<VersionStorageSnapshot?>(null) }
@@ -296,6 +309,27 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
     var selectedChannel by rememberSaveable { mutableIntStateOf(0) }
     var searchText by rememberSaveable { mutableStateOf("") }
     var refreshCounter by rememberSaveable { mutableIntStateOf(0) }
+
+    LaunchedEffect(refreshCounter) {
+        privateLoading = true
+        privateError = null
+        val token = withContext(Dispatchers.IO) { tokenStore.read() }
+        if (token.isNullOrBlank()) {
+            privateVersions = emptyList()
+            privateLoading = false
+        } else {
+            runCatching {
+                withContext(Dispatchers.IO) { privateRepository.load(token) }
+            }.onSuccess { entries ->
+                privateVersions = entries
+            }.onFailure { error ->
+                privateVersions = emptyList()
+                privateError = error.message ?: "No se pudo cargar el almacenamiento privado."
+            }
+            privateLoading = false
+        }
+    }
+
     var forceNextRefresh by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -341,6 +375,15 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             snapshot = storageSnapshot,
             error = storageError,
             onRefresh = { storageRefreshCount++ }
+        )
+
+        PrivateStorageSection(
+            versions = privateVersions,
+            isLoading = privateLoading,
+            error = privateError,
+            tokenStore = tokenStore,
+            onApkStored = { storageRefreshCount++ },
+            onRefresh = { refreshCounter++ }
         )
 
         OutlinedTextField(
@@ -438,6 +481,130 @@ private fun VersionsScreen(modifier: Modifier = Modifier) {
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+
+@Composable
+private fun PrivateStorageSection(
+    versions: List<PrivateStorageVersion>,
+    isLoading: Boolean,
+    error: String?,
+    tokenStore: GitHubTokenStore,
+    onApkStored: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val token = remember { runCatching { tokenStore.read() }.getOrNull() }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Almacenamiento privado",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Versiones disponibles en tu repositorio privado de GitHub",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Button(onClick = onRefresh, enabled = token != null && !isLoading) {
+                    Text("Actualizar")
+                }
+            }
+
+            when {
+                token == null -> Text(
+                    "Agrega tu Fine-grained token en Configuración para mostrar y descargar las versiones privadas.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                isLoading -> {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "Consultando el repositorio privado…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                error != null -> Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                versions.isEmpty() -> Text(
+                    "El repositorio privado no tiene versiones publicadas.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> versions.forEach { version ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            version.displayName + " • " + version.version,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "APK privado • " + version.supportedAbis.joinToString(", ") +
+                                " • " + android.text.format.Formatter.formatFileSize(
+                                    LocalContext.current,
+                                    version.sizeBytes
+                                ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!version.officialSignatureVerified) {
+                            Text(
+                                "Advertencia: la firma oficial de RobTop no está verificada.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        version.warning?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        val safeId = version.id.lowercase()
+                            .replace(Regex("[^a-z0-9_-]"), "-")
+                            .take(48)
+                        val artifact = DownloadArtifact(
+                            url = version.downloadUrl,
+                            expectedSizeBytes = version.sizeBytes,
+                            expectedSha256 = version.sha256,
+                            expectedPackageName = version.packageName,
+                            expectedSigningCertificateSha256 = version.signingCertificateSha256,
+                            supportedAbis = version.supportedAbis,
+                            fileName = "geometry-dash-$safeId.apk",
+                            versionLabel = version.version,
+                        )
+                        VersionDownloadAction(
+                            resolution = DownloadResolution.Available(artifact),
+                            onApkStored = onApkStored
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -762,8 +929,18 @@ private fun SettingsScreen(
     selectedTheme: AppThemeOption,
     onThemeSelected: (AppThemeOption) -> Unit
 ) {
+    val context = LocalContext.current
+    val tokenStore = remember(context) { GitHubTokenStore(context) }
+    val scope = rememberCoroutineScope()
+    var tokenInput by remember { mutableStateOf("") }
+    var tokenSaved by remember { mutableStateOf(tokenStore.hasToken()) }
+    var checkingAccess by remember { mutableStateOf(false) }
+    var tokenStatus by remember { mutableStateOf<String?>(null) }
+
     Column(
-        modifier = modifier.padding(16.dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -773,7 +950,7 @@ private fun SettingsScreen(
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                "Configura el aspecto y el comportamiento de la aplicación.",
+                "Configura el aspecto y el acceso al almacenamiento privado.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -835,6 +1012,121 @@ private fun SettingsScreen(
                         }
                     }
                 }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Almacenamiento privado de GitHub",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Conecta tu repositorio privado para que Dash Launcher pueda consultar las versiones que guardaste allí.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = { tokenInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Fine-grained personal access token") },
+                    placeholder = { Text("github_pat_…") },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Text(
+                    if (tokenSaved) "Token guardado de forma cifrada en este dispositivo." else "Todavía no hay un token guardado.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = {
+                        val candidate = tokenInput.trim()
+                        if (candidate.isBlank()) {
+                            tokenStatus = "Introduce el token antes de continuar."
+                        } else {
+                            runCatching { tokenStore.save(candidate) }
+                                .onSuccess {
+                                    tokenSaved = true
+                                    tokenInput = ""
+                                    tokenStatus = "Token guardado. Comprobando acceso al repositorio…"
+                                    checkingAccess = true
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) {
+                                            GitHubPrivateStorageAccess.check(tokenStore.read().orEmpty())
+                                        }
+                                        tokenStatus = result
+                                        checkingAccess = false
+                                    }
+                                }
+                                .onFailure { error ->
+                                    tokenStatus = error.message ?: "No se pudo guardar el token de forma segura."
+                                }
+                        }
+                    },
+                    enabled = tokenInput.isNotBlank() && !checkingAccess,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (checkingAccess) "Comprobando…" else "Guardar y comprobar acceso")
+                }
+                if (tokenSaved) {
+                    Button(
+                        onClick = {
+                            checkingAccess = true
+                            tokenStatus = "Comprobando acceso al repositorio…"
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    GitHubPrivateStorageAccess.check(tokenStore.read().orEmpty())
+                                }
+                                tokenStatus = result
+                                checkingAccess = false
+                            }
+                        },
+                        enabled = !checkingAccess,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Comprobar conexión")
+                    }
+                    Button(
+                        onClick = {
+                            tokenStore.clear()
+                            tokenSaved = false
+                            tokenInput = ""
+                            tokenStatus = "Token eliminado de este dispositivo."
+                        },
+                        enabled = !checkingAccess,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Eliminar token")
+                    }
+                }
+                tokenStatus?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.contains("correctamente", ignoreCase = true)) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                Text(
+                    "Permiso requerido en GitHub: Contents → Read-only para hesta-lang/Dash-Launcher-Private-Storage. No concedas permisos de escritura.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
